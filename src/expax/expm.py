@@ -114,7 +114,10 @@ def _validate_static_options(max_degree, max_scaling):
 
 
 def _as_integer(value, name):
-    if isinstance(value, bool):
+    dtype = getattr(value, "dtype", None)
+    if isinstance(value, bool) or (
+        dtype is not None and jnp.issubdtype(dtype, jnp.bool_)
+    ):
         raise ValueError(f"{name} must be an integer")
     try:
         return int(index(value))

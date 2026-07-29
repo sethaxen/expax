@@ -8,6 +8,13 @@ from jax.flatten_util import ravel_pytree
 import expax
 
 
+class _IndexableBoolean:
+    dtype = np.dtype(bool)
+
+    def __index__(self):
+        return 1
+
+
 def _dense_matvec(x, matrix):
     return matrix @ x
 
@@ -189,7 +196,10 @@ def test_deferred_time_selection_reuses_operator_plan():
     assert len(estimator_calls) == calls_after_first
 
 
-@pytest.mark.parametrize("max_degree", [0, 56, 1.5, True])
+@pytest.mark.parametrize(
+    "max_degree",
+    [0, 56, 1.5, True, np.bool_(True), jnp.array(True), _IndexableBoolean()],
+)
 def test_expm_multiply_rejects_invalid_max_degree(max_degree):
     with pytest.raises(ValueError, match="max_degree"):
         expax.expm_multiply(
@@ -204,7 +214,10 @@ def test_expm_multiply_rejects_invalid_max_degree(max_degree):
         )
 
 
-@pytest.mark.parametrize("max_scaling", [0, -1, 1.5, True])
+@pytest.mark.parametrize(
+    "max_scaling",
+    [0, -1, 1.5, True, np.bool_(True), jnp.array(True), _IndexableBoolean()],
+)
 def test_expm_multiply_rejects_invalid_max_scaling(max_scaling):
     with pytest.raises(ValueError, match="max_scaling"):
         expax.expm_multiply(
