@@ -49,3 +49,13 @@ def test_select_from_matrix_implements_equation_3_14():
 
     np.testing.assert_array_equal(degrees, [0, 1, 2])
     np.testing.assert_array_equal(scalings, [1.0, 2.0, 3.0])
+
+
+def test_select_from_matrix_uses_one_scaling_for_zero_estimates():
+    matrix = jnp.zeros((2, 3))
+    valid = jnp.ones_like(matrix, dtype=bool)
+
+    degree, scaling = _select_from_matrix(jnp.array(2.0), matrix, valid)
+
+    assert int(degree) == 1
+    assert float(scaling) == 1.0

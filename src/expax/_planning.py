@@ -38,7 +38,7 @@ def _select_from_matrix(scales, matrix, valid):
     matrix = jnp.asarray(matrix)
     valid = jnp.asarray(valid)
     degrees = jnp.arange(1, matrix.shape[-1] + 1)
-    candidates = jnp.ceil(scales[..., None, None] * matrix)
+    candidates = jnp.maximum(jnp.ceil(scales[..., None, None] * matrix), 1)
     candidates = jnp.where(valid, candidates, jnp.inf)
     candidates_by_degree = jnp.min(candidates, axis=-2)
     costs = candidates_by_degree * degrees
