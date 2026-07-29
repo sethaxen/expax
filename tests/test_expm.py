@@ -82,6 +82,38 @@ def test_expm_multiply_parallel_times_have_leading_time_axis():
     np.testing.assert_allclose(received, expected, rtol=1e-13, atol=1e-13)
 
 
+def test_expm_multiply_actions_vmap_over_vectors():
+    matrix = jnp.array([[1.0, 3.0], [-2.0, 0.5]])
+    vectors = jnp.array([[2.0, -1.0], [0.5, 3.0], [-2.0, 4.0]])
+    times = jnp.array([0.0, 0.4])
+
+    action = expax.expm_multiply(
+        _dense_matvec,
+        matrix,
+        times=times,
+        v_like=jnp.zeros(2),
+        key=jax.random.key(0),
+        trace_estimator=_known_trace,
+        norm_estimator=(_exact_norm_estimator, 8),
+    )
+    received = jax.vmap(action)(vectors)
+    expected = np.stack(
+        [
+            np.stack(
+                [
+                    scipy.linalg.expm(float(time) * np.asarray(matrix))
+                    @ np.asarray(vector)
+                    for time in times
+                ]
+            )
+            for vector in vectors
+        ]
+    )
+
+    assert received.shape == (3, 2, 2)
+    np.testing.assert_allclose(received, expected, rtol=1e-13, atol=1e-13)
+
+
 def test_expm_multiply_uses_default_norm_estimator_for_none():
     matrix = jnp.diag(jnp.array([1.0, 2.0, 3.0, 4.0, 5.0]))
     vector = jnp.array([2.0, -1.0, 0.5, 3.0, -2.0])
@@ -377,3 +409,26 @@ def test_expm_multiply_skips_actions_above_max_scaling():
 
     assert jnp.all(jnp.isnan(received))
     assert not calls
+
+
+def test_expm_multiply_uses_injected_while_loop():
+    loop_calls = []
+
+    def while_loop(cond_fun, body_fun, init_val):
+        loop_calls.append(None)
+        return jax.lax.while_loop(cond_fun, body_fun, init_val)
+
+    action = expax.expm_multiply(
+        _dense_matvec,
+        jnp.eye(3),
+        times=jnp.array(0.5),
+        v_like=jnp.zeros(3),
+        key=jax.random.key(0),
+        trace_estimator=_known_trace,
+        norm_estimator=(_exact_norm_estimator, 8),
+        while_loop=while_loop,
+    )
+    received = action(jnp.ones(3))
+
+    np.testing.assert_allclose(received, jnp.exp(0.5) * jnp.ones(3))
+    assert len(loop_calls) == 1
