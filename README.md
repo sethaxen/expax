@@ -30,5 +30,3 @@ Operators and vectors may be arbitrary PyTrees of JAX arrays. Planning uses
 runtime operator parameters inside `jax.jit`, arbitrary time points use
 synchronized parallel actions, and equally spaced points can opt into the
 specialized Al-Mohy--Higham interval algorithm.
-
-See the [usage guide](docs/usage.md) and [API reference](docs/api.md).

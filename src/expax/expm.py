@@ -53,9 +53,11 @@ def expm_multiply(
             uses two-sample XTrace when the dimension permits it.
         norm_estimator: Pair ``(estimator, cost)``. The estimator has the same
             calling convention as ``trace_estimator`` and estimates the operator
-            1-norm; ``cost`` is its number of scalar ``matvec`` applications.
-            ``None`` selects :func:`expax.normest.onenormest` when the dimension
-            permits it and exact basis actions for dimensions one and two.
+            1-norm; ``cost`` models its work in scalar ``matvec`` equivalents for
+            the planning criterion. ``None`` selects
+            :func:`expax.normest.onenormest`, whose model is four applications per
+            block column, when the dimension permits it and exact basis actions for
+            dimensions one and two.
         max_degree: Maximum Taylor degree, between 1 and 55.
         max_scaling: Optional upper bound on a selected scaling count. An action
             whose plan exceeds the bound returns NaN leaves without entering its
@@ -67,7 +69,7 @@ def expm_multiply(
             It implements runtime-dependent scaling and time-grid loops.
         algorithm: ``"parallel"`` evaluates arbitrary times with synchronized
             lanes. ``"time_grid"`` uses Algorithm 5.2 and requires the supplied
-            times to be equally spaced; equal spacing is not checked at runtime.
+            times to be equally spaced. Invalid grids produce NaN result leaves.
 
     Returns:
         If ``times`` is supplied, a callable ``vector -> result``. Otherwise, a

@@ -1,6 +1,7 @@
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 import scipy.linalg
 from jax.flatten_util import ravel_pytree
 
@@ -52,6 +53,76 @@ def test_time_grid_matches_dense_reference():
     )
 
     np.testing.assert_allclose(received, expected, rtol=1e-13, atol=1e-13)
+
+
+def test_time_grid_returns_nan_for_nonuniform_runtime_times():
+    matrix = jnp.array([[1.0, 3.0], [-2.0, 0.5]])
+    vector = jnp.array([2.0, -1.0])
+
+    @jax.jit
+    def evaluate(times):
+        action = expax.expm_multiply(
+            _dense_matvec,
+            matrix,
+            times=times,
+            v_like=jnp.zeros_like(vector),
+            key=jax.random.key(0),
+            trace_estimator=_known_trace,
+            norm_estimator=(_exact_norm_estimator, 8),
+            algorithm="time_grid",
+        )
+        return action(vector)
+
+    received = evaluate(jnp.array([0.0, 0.1, 1.0]))
+
+    assert jnp.all(jnp.isnan(received))
+
+
+@pytest.mark.parametrize(
+    "times",
+    [
+        jnp.array([0.0, jnp.nan, 1.0]),
+        jnp.array([0.0, 0.5, jnp.nan]),
+    ],
+)
+def test_time_grid_returns_nan_for_nonfinite_time(times):
+    matrix = jnp.array([[1.0, 3.0], [-2.0, 0.5]])
+    vector = jnp.array([2.0, -1.0])
+
+    action = expax.expm_multiply(
+        _dense_matvec,
+        matrix,
+        times=times,
+        v_like=jnp.zeros_like(vector),
+        key=jax.random.key(0),
+        trace_estimator=_known_trace,
+        norm_estimator=(_exact_norm_estimator, 8),
+        algorithm="time_grid",
+    )
+    received = action(vector)
+
+    assert jnp.all(jnp.isnan(received))
+
+
+def test_time_grid_returns_nan_when_interval_exceeds_max_scaling():
+    matrix = jnp.array([[0.0, 100.0], [-100.0, 0.0]])
+    vector = jnp.array([2.0, -1.0])
+    times = jnp.linspace(0.0, 1.0, 101)
+
+    action = expax.expm_multiply(
+        _dense_matvec,
+        matrix,
+        times=times,
+        v_like=jnp.zeros_like(vector),
+        key=jax.random.key(0),
+        trace_estimator=_known_trace,
+        norm_estimator=(_exact_norm_estimator, 8),
+        max_scaling=1,
+        algorithm="time_grid",
+    )
+    received = action(vector)
+
+    assert jnp.all(jnp.isnan(received))
 
 
 def test_time_grid_uses_sequential_branch_for_large_scaling():

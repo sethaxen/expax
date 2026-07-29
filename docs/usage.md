@@ -93,9 +93,11 @@ action = expax.expm_multiply(
 trajectory = action(vector)
 ```
 
-`time_grid` is an algorithm selection, not a runtime grid detector. The caller
-must supply at least two equally spaced points. The default parallel algorithm
-can be faster on accelerators, so the specialized grid algorithm is opt-in.
+Algorithm selection is explicit rather than inferred from the time values.
+`time_grid` requires at least two equally spaced, finite points and validates
+that promise at runtime; invalid grids produce NaN result leaves. The default
+parallel algorithm can be faster on accelerators, so the specialized grid
+algorithm is opt-in.
 
 ## Estimators
 
@@ -115,10 +117,12 @@ def known_trace(_matvec, _v_like, _key, matrix):
 ```
 
 A norm estimator is an `(estimator, cost)` pair. Its callable uses the same
-arguments and returns an operator 1-norm estimate. `cost` is the scalar number of
-`matvec` applications needed for one estimate; power costs are derived by
-repeated operator application. The default is `expax.normest.onenormest()` when
-the dimension permits it and exact basis actions for dimensions one and two.
+arguments and returns an operator 1-norm estimate. `cost` is the work model in
+scalar `matvec` equivalents used by the planning criterion, rather than a
+promise of the estimator's exact adaptive runtime count; power costs are derived
+by repeated operator application. The default is `expax.normest.onenormest()`,
+whose model is four applications per block column, when the dimension permits
+it and exact basis actions for dimensions one and two.
 
 Adjoint actions are derived internally with JAX linear transposition. Estimators
 never require a separate adjoint argument.

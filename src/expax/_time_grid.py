@@ -22,9 +22,10 @@ def _time_grid_action(
     initial_time = times[0]
     interval = times[-1] - initial_time
     step_size = interval / num_steps
-    interval_degree, interval_scaling, _ = select(interval)
+    interval_degree, interval_scaling, interval_valid = select(interval)
     initial_degree, initial_scaling, initial_valid = select(initial_time)
     step_degree, step_scaling, step_valid = select(step_size)
+    grid_valid = _is_evenly_spaced(times, step_size)
     initial_action = _taylor_action(
         initial_time,
         matvec,
@@ -93,13 +94,23 @@ def _time_grid_action(
             )
 
         return jax.lax.cond(
-            initial_valid,
+            initial_valid & interval_valid & grid_valid,
             evaluate,
             lambda vector: _tree_nan_times(vector, num_steps + 1),
             vector,
         )
 
     return action
+
+
+def _is_evenly_spaced(times, step_size):
+    real_dtype = jnp.real(jnp.asarray(step_size)).dtype
+    scale = jnp.maximum(1, jnp.max(jnp.abs(times)))
+    tolerance = 32 * jnp.finfo(real_dtype).eps * scale
+    differences = jnp.diff(times)
+    return jnp.all(jnp.isfinite(times)) & jnp.all(
+        jnp.abs(differences - step_size) <= tolerance
+    )
 
 
 def _reuse_taylor_terms(
