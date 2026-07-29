@@ -141,15 +141,9 @@ def _estimate_norm_factory(block_size, max_steps):
                     )
 
                 def continue_iteration(_):
-                    best_column = jnp.argmax(column_norms)
-                    best_index = indices[best_column]
                     next_estimate = jnp.maximum(estimate, candidate)
-                    signs = _sign_round_up(image)
-                    signs_repeated = (step > 0) & _all_columns_parallel(
-                        signs, previous_signs
-                    )
 
-                    def stop_on_repeated_signs(_):
+                    def stop_after_final_forward(_):
                         return (
                             block,
                             next_estimate,
@@ -160,42 +154,68 @@ def _estimate_norm_factory(block_size, max_steps):
                             jnp.array(True),
                         )
 
-                    def continue_with_adjoint(_):
-                        next_key, signs_unique = _resample_parallel_columns(
-                            key, signs, previous_signs
+                    def process_signs(_):
+                        best_column = jnp.argmax(column_norms)
+                        best_index = indices[best_column]
+                        signs = _sign_round_up(image)
+                        signs_repeated = (step > 0) & _all_columns_parallel(
+                            signs, previous_signs
                         )
-                        adjoint_image = apply_adjoint(signs_unique)
-                        row_norms = jnp.max(jnp.abs(adjoint_image), axis=0)
-                        ranked = jnp.argsort(-row_norms, stable=True)
-                        repeated_best = (step > 0) & jnp.isclose(
-                            jnp.max(row_norms), row_norms[best_index]
-                        )
-                        top_already_visited = jnp.all(visited[ranked[:block_size]])
-                        should_stop = repeated_best | top_already_visited
 
-                        ranked_visited = visited[ranked]
-                        unseen_first = jnp.argsort(ranked_visited, stable=True)
-                        selected = ranked[unseen_first[:block_size]].astype(
-                            indices.dtype
-                        )
-                        next_block = jax.nn.one_hot(
-                            selected, size, dtype=flat_like.dtype
-                        )
-                        next_visited = visited.at[selected].set(True)
-                        return (
-                            next_block,
-                            next_estimate,
-                            signs_unique,
-                            selected,
-                            next_visited,
-                            next_key,
-                            should_stop,
+                        def stop_on_repeated_signs(_):
+                            return (
+                                block,
+                                next_estimate,
+                                previous_signs,
+                                indices,
+                                visited,
+                                key,
+                                jnp.array(True),
+                            )
+
+                        def continue_with_adjoint(_):
+                            next_key, signs_unique = _resample_parallel_columns(
+                                key, signs, previous_signs
+                            )
+                            adjoint_image = apply_adjoint(signs_unique)
+                            row_norms = jnp.max(jnp.abs(adjoint_image), axis=0)
+                            ranked = jnp.argsort(-row_norms, stable=True)
+                            repeated_best = (step > 0) & jnp.isclose(
+                                jnp.max(row_norms), row_norms[best_index]
+                            )
+                            top_already_visited = jnp.all(visited[ranked[:block_size]])
+                            should_stop = repeated_best | top_already_visited
+
+                            ranked_visited = visited[ranked]
+                            unseen_first = jnp.argsort(ranked_visited, stable=True)
+                            selected = ranked[unseen_first[:block_size]].astype(
+                                indices.dtype
+                            )
+                            next_block = jax.nn.one_hot(
+                                selected, size, dtype=flat_like.dtype
+                            )
+                            next_visited = visited.at[selected].set(True)
+                            return (
+                                next_block,
+                                next_estimate,
+                                signs_unique,
+                                selected,
+                                next_visited,
+                                next_key,
+                                should_stop,
+                            )
+
+                        return jax.lax.cond(
+                            signs_repeated,
+                            stop_on_repeated_signs,
+                            continue_with_adjoint,
+                            operand=None,
                         )
 
                     return jax.lax.cond(
-                        signs_repeated,
-                        stop_on_repeated_signs,
-                        continue_with_adjoint,
+                        step == max_steps - 1,
+                        stop_after_final_forward,
+                        process_signs,
                         operand=None,
                     )
 

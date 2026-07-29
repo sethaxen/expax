@@ -94,6 +94,46 @@ def test_onenormest_handles_operator_powers_without_changing_its_cost():
     assert power * cost == 24
 
 
+def test_onenormest_skips_adjoint_on_final_step(monkeypatch):
+    matrix = jnp.array(
+        [
+            [-0.98128909, 0.03826571, -0.9366923, -0.69846063, -0.29595587, 0.31419297],
+            [0.63443117, -1.08491685, 0.25676977, 0.47592282, 0.85303157, -0.16485969],
+            [1.04476288, 1.53548419, 0.44388999, -0.70602427, -1.39838878, 0.33018547],
+            [-1.73440706, 0.72005797, 0.56592782, -0.79026839, -0.11883412, 0.7663085],
+            [
+                -0.48582007,
+                0.56101067,
+                -0.30619089,
+                -0.27750305,
+                -0.56399731,
+                -1.92742072,
+            ],
+            [-1.9018335, 0.86788021, -0.34433705, 1.53220957, -0.63933366, 1.56270841],
+        ]
+    )
+    adjoint_calls = []
+
+    def record(_):
+        adjoint_calls.append(None)
+
+    def instrumented_adjoint(_matvec, _v_like):
+        def adjoint(vector, matrix):
+            jax.debug.callback(record, vector[0])
+            return matrix.T @ vector
+
+        return adjoint
+
+    monkeypatch.setattr(expax.normest, "_linear_adjoint", instrumented_adjoint)
+    estimate, _ = expax.normest.onenormest(block_size=2, max_steps=2)
+    received = jax.jit(lambda key: estimate(_dense_matvec, jnp.zeros(6), key, matrix))(
+        jax.random.key(0)
+    )
+    jax.block_until_ready(received)
+
+    assert len(adjoint_calls) == 2
+
+
 def test_onenormest_does_not_materialize_small_operators():
     estimate, _ = expax.normest.onenormest(block_size=3)
 

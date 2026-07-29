@@ -33,7 +33,7 @@ def _build_operator_plan(
     flat_like, _ = _validate_vector_space(v_like)
     dimension = flat_like.size
     p_max = _compute_p_max(max_degree)
-    theta = jnp.asarray(theta)
+    theta = jnp.asarray(theta, dtype=jnp.real(flat_like).dtype)
 
     stopped_parameters = jax.tree.map(jax.lax.stop_gradient, parameters)
     stopped_v_like = jax.tree.map(
@@ -96,7 +96,6 @@ def _build_operator_plan(
 
 
 def _make_selector(norm, matrix, use_norm, *, theta, max_scaling):
-    del max_scaling
     p_max = matrix.shape[-2] + 1
     max_degree = matrix.shape[-1]
     powers = jnp.arange(2, p_max + 1)[:, None]
@@ -110,7 +109,11 @@ def _make_selector(norm, matrix, use_norm, *, theta, max_scaling):
             lambda: _select_from_norm(stopped_times, norm, theta),
             lambda: _select_from_matrix(stopped_times, matrix, valid),
         )
-        return jax.tree.map(jax.lax.stop_gradient, selected)
+        degree, scaling = selected
+        selection_valid = jnp.isfinite(scaling)
+        if max_scaling is not None:
+            selection_valid &= scaling <= max_scaling
+        return jax.tree.map(jax.lax.stop_gradient, (degree, scaling, selection_valid))
 
     return select
 

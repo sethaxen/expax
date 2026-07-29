@@ -129,6 +129,28 @@ def test_condition_3_13_skips_power_norm_estimates():
     assert len(calls) == 1
 
 
+def test_operator_plan_preserves_single_precision_across_condition():
+    matrix = jnp.eye(3, dtype=jnp.float32)
+
+    def norm_estimator(*_):
+        return jnp.array(100.0, dtype=jnp.float32)
+
+    _, _, power_matrix, use_norm = _build_operator_plan(
+        jnp.array(1.0, dtype=jnp.float32),
+        _dense_matvec,
+        (matrix,),
+        v_like=jnp.zeros(3, dtype=jnp.float32),
+        key=jax.random.key(0),
+        trace_estimator=lambda *_: jnp.array(0.0, dtype=jnp.float32),
+        norm_estimator=(norm_estimator, 8),
+        theta=(1.0,) * 5,
+        max_degree=5,
+    )
+
+    assert not bool(use_norm)
+    assert power_matrix.dtype == jnp.float32
+
+
 def test_deferred_plan_builds_reusable_matrix_once():
     calls = []
 
@@ -162,6 +184,22 @@ def test_deferred_plan_builds_reusable_matrix_once():
     assert len(calls) == calls_after_planning
     assert first[0].shape == ()
     assert second[0].shape == (2,)
+
+
+def test_selector_marks_scalings_above_cap_invalid():
+    select = _make_selector(
+        jnp.array(10.0),
+        jnp.zeros((2, 5)),
+        jnp.array(True),
+        theta=jnp.ones(5),
+        max_scaling=5,
+    )
+
+    degree, scaling, valid = select(jnp.array(1.0))
+
+    assert int(degree) == 1
+    assert float(scaling) == 10.0
+    assert not bool(valid)
 
 
 def test_operator_planning_stops_parameter_gradients():
