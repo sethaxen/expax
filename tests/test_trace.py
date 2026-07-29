@@ -202,6 +202,22 @@ def test_selector_marks_scalings_above_cap_invalid():
     assert not bool(valid)
 
 
+def test_selector_preserves_single_precision_with_python_theta():
+    select = _make_selector(
+        jnp.array(10.0, dtype=jnp.float32),
+        jnp.ones((2, 5), dtype=jnp.float32),
+        jnp.array(True),
+        theta=(1.0,) * 5,
+        max_scaling=None,
+    )
+
+    degree, scaling, valid = select(jnp.array(1.0, dtype=jnp.float32))
+
+    assert jnp.issubdtype(degree.dtype, jnp.integer)
+    assert scaling.dtype == jnp.float32
+    assert bool(valid)
+
+
 def test_operator_planning_stops_parameter_gradients():
     base = jnp.diag(jnp.array([1.0, 2.0, 4.0]))
 

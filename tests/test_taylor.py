@@ -182,3 +182,60 @@ def test_taylor_action_stops_after_convergence():
     jax.block_until_ready(received)
 
     assert len(calls) == 1
+
+
+def test_taylor_action_synchronizes_arbitrary_time_points():
+    matrix = jnp.array([[1.0, 3.0], [-2.0, 0.5]])
+    vector = jnp.array([2.0, -1.0])
+    times = jnp.array([0.0, 0.7, -0.4])
+    action = _taylor_action(
+        times,
+        _dense_matvec,
+        (matrix,),
+        jnp.array(0.0),
+        jnp.array([0, 30, 25]),
+        jnp.array([1.0, 3.0, 2.0]),
+        jnp.array([True, True, True]),
+        tol=2.0**-53,
+        max_degree=30,
+        while_loop=jax.lax.while_loop,
+        scalar_time=False,
+    )
+
+    received = action(vector)
+    expected = np.stack(
+        [
+            scipy.linalg.expm(float(time) * np.asarray(matrix)) @ np.asarray(vector)
+            for time in times
+        ]
+    )
+
+    assert received.shape == (3, 2)
+    np.testing.assert_allclose(received, expected, rtol=1e-13, atol=1e-13)
+
+
+def test_taylor_action_returns_nan_only_for_invalid_time_points():
+    matrix = jnp.array([[1.0, 3.0], [-2.0, 0.5]])
+    vector = jnp.array([2.0, -1.0])
+    times = jnp.array([0.7, -0.4])
+    action = _taylor_action(
+        times,
+        _dense_matvec,
+        (matrix,),
+        jnp.array(0.0),
+        jnp.array([30, 30]),
+        jnp.array([3.0, jnp.inf]),
+        jnp.array([True, False]),
+        tol=2.0**-53,
+        max_degree=30,
+        while_loop=jax.lax.while_loop,
+        scalar_time=False,
+    )
+
+    received = action(vector)
+    expected = scipy.linalg.expm(float(times[0]) * np.asarray(matrix)) @ np.asarray(
+        vector
+    )
+
+    np.testing.assert_allclose(received[0], expected, rtol=1e-13, atol=1e-13)
+    assert jnp.all(jnp.isnan(received[1]))

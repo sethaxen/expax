@@ -98,6 +98,7 @@ def _build_operator_plan(
 def _make_selector(norm, matrix, use_norm, *, theta, max_scaling):
     p_max = matrix.shape[-2] + 1
     max_degree = matrix.shape[-1]
+    theta = jnp.asarray(theta, dtype=jnp.asarray(norm).dtype)
     powers = jnp.arange(2, p_max + 1)[:, None]
     degrees = jnp.arange(1, max_degree + 1)[None, :]
     valid = degrees >= powers * (powers - 1) - 1
