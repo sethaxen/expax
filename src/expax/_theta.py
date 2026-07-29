@@ -133,9 +133,12 @@ def _compute_theta(degree, tol):
         product_coefficients[0] = Decimal(1)
         for n in range(degree + 1, limit + 1):
             product_coefficients[n] = sum(
-                (Decimal(-1) if (n - j) % 2 else Decimal(1))
-                / (factorials[n - j] * factorials[j])
-                for j in range(degree + 1)
+                (
+                    (Decimal(-1) if (n - j) % 2 else Decimal(1))
+                    / (factorials[n - j] * factorials[j])
+                    for j in range(degree + 1)
+                ),
+                start=Decimal(0),
             )
 
         log_coefficients = [Decimal(0)] * (limit + 1)
