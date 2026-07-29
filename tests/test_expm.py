@@ -1,0 +1,169 @@
+import jax
+import jax.numpy as jnp
+import numpy as np
+import scipy.linalg
+from jax.flatten_util import ravel_pytree
+
+import expax
+
+
+def _dense_matvec(x, matrix):
+    return matrix @ x
+
+
+def _exact_norm_estimator(matvec, v_like, key, *parameters):
+    del key
+    flat_like, unravel = ravel_pytree(v_like)
+    basis = jnp.eye(flat_like.size, dtype=flat_like.dtype)
+
+    def apply(vector):
+        image, _ = ravel_pytree(matvec(unravel(vector), *parameters))
+        return image
+
+    images = jax.vmap(apply)(basis)
+    return jnp.max(jnp.sum(jnp.abs(images), axis=-1))
+
+
+def _known_trace(_matvec, _v_like, _key, matrix):
+    return jnp.trace(matrix)
+
+
+def test_expm_multiply_known_time_matches_dense_reference():
+    matrix = jnp.array([[4.0, 1.0, 0.0], [0.0, 1.0, 2.0], [0.0, 0.0, -2.0]])
+    vector = jnp.array([2.0, -1.0, 0.5])
+    time = jnp.array(0.8)
+
+    action = expax.expm_multiply(
+        _dense_matvec,
+        matrix,
+        times=time,
+        v_like=jnp.zeros_like(vector),
+        key=jax.random.key(0),
+        trace_estimator=_known_trace,
+        norm_estimator=(_exact_norm_estimator, 8),
+    )
+    received = action(vector)
+    expected = scipy.linalg.expm(float(time) * np.asarray(matrix)) @ np.asarray(vector)
+
+    np.testing.assert_allclose(received, expected, rtol=1e-13, atol=1e-13)
+
+
+def test_expm_multiply_uses_default_norm_estimator_for_none():
+    matrix = jnp.diag(jnp.array([1.0, 2.0, 3.0, 4.0, 5.0]))
+    vector = jnp.array([2.0, -1.0, 0.5, 3.0, -2.0])
+    time = jnp.array(0.2)
+
+    action = expax.expm_multiply(
+        _dense_matvec,
+        matrix,
+        times=time,
+        v_like=jnp.zeros_like(vector),
+        key=jax.random.key(1),
+        trace_estimator=_known_trace,
+        norm_estimator=None,
+    )
+    received = action(vector)
+    expected = scipy.linalg.expm(float(time) * np.asarray(matrix)) @ np.asarray(vector)
+
+    np.testing.assert_allclose(received, expected, rtol=1e-13, atol=1e-13)
+
+
+def test_expm_multiply_deferred_time_matches_known_time():
+    matrix = jnp.array([[2.0, -1.0, 0.0], [0.0, 3.0, 4.0], [1.0, 0.0, -2.0]])
+    vector = jnp.array([1.0, 2.0, -1.0])
+    time = jnp.array(-0.3)
+    options = {
+        "v_like": jnp.zeros_like(vector),
+        "key": jax.random.key(2),
+        "trace_estimator": _known_trace,
+        "norm_estimator": (_exact_norm_estimator, 8),
+    }
+
+    known_action = expax.expm_multiply(_dense_matvec, matrix, times=time, **options)
+    at_times = expax.expm_multiply(_dense_matvec, matrix, **options)
+
+    np.testing.assert_allclose(
+        at_times(time)(vector),
+        known_action(vector),
+        rtol=1e-14,
+        atol=1e-14,
+    )
+
+
+def test_expm_multiply_ignores_v_like_values():
+    matrix = jnp.diag(jnp.array([1.0, 2.0, 3.0]))
+    vector = jnp.array([2.0, -1.0, 0.5])
+    options = {
+        "times": jnp.array(0.4),
+        "key": jax.random.key(4),
+        "trace_estimator": _known_trace,
+        "norm_estimator": (_exact_norm_estimator, 8),
+    }
+
+    from_zeros = expax.expm_multiply(
+        _dense_matvec, matrix, v_like=jnp.zeros(3), **options
+    )(vector)
+    from_values = expax.expm_multiply(
+        _dense_matvec, matrix, v_like=jnp.array([8.0, -2.0, 5.0]), **options
+    )(vector)
+
+    np.testing.assert_array_equal(from_zeros, from_values)
+
+
+def test_expm_multiply_plans_with_runtime_parameters_inside_jit():
+    vector = jnp.array([1.0, -2.0, 0.5])
+    time = jnp.array(0.2)
+
+    @jax.jit
+    def evaluate(matrix, vector, key):
+        action = expax.expm_multiply(
+            _dense_matvec,
+            matrix,
+            times=time,
+            v_like=vector,
+            key=key,
+            trace_estimator=_known_trace,
+            norm_estimator=(_exact_norm_estimator, 8),
+        )
+        return action(vector)
+
+    first_matrix = jnp.diag(jnp.array([1.0, 2.0, 3.0]))
+    second_matrix = jnp.array([[0.0, 1.0, 0.0], [-2.0, 0.0, 0.0], [0.0, 0.0, 4.0]])
+    first = evaluate(first_matrix, vector, jax.random.key(0))
+    second = evaluate(second_matrix, vector, jax.random.key(1))
+
+    first_expected = scipy.linalg.expm(
+        float(time) * np.asarray(first_matrix)
+    ) @ np.asarray(vector)
+    second_expected = scipy.linalg.expm(
+        float(time) * np.asarray(second_matrix)
+    ) @ np.asarray(vector)
+    np.testing.assert_allclose(first, first_expected, rtol=1e-14, atol=1e-14)
+    np.testing.assert_allclose(second, second_expected, rtol=1e-14, atol=1e-14)
+
+
+def test_deferred_time_selection_reuses_operator_plan():
+    estimator_calls = []
+
+    def record(_):
+        estimator_calls.append(None)
+
+    def norm_estimator(*_):
+        jax.debug.callback(record, jnp.array(0))
+        return jnp.array(1.0)
+
+    at_times = expax.expm_multiply(
+        _dense_matvec,
+        jnp.eye(3),
+        v_like=jnp.zeros(3),
+        key=jax.random.key(0),
+        trace_estimator=lambda *_: jnp.array(0.0),
+        norm_estimator=(norm_estimator, 8),
+        max_degree=5,
+    )
+    jax.block_until_ready(at_times(jnp.array(0.5))(jnp.ones(3)))
+    calls_after_first = len(estimator_calls)
+    jax.block_until_ready(at_times(jnp.array(1.0))(jnp.ones(3)))
+
+    assert calls_after_first == 4
+    assert len(estimator_calls) == calls_after_first
