@@ -17,6 +17,7 @@ from expax._planning import (
 )
 from expax._taylor import _taylor_action
 from expax._theta import _theta
+from expax._time_grid import _time_grid_action
 from expax.normest import onenormest
 
 
@@ -32,6 +33,7 @@ def expm_multiply(
     max_scaling: SupportsIndex | None = None,
     tol=None,
     while_loop=jax.lax.while_loop,
+    algorithm="parallel",
 ) -> Callable[..., Any]:
     """Construct an action of ``exp(t A)`` on one PyTree-valued vector.
 
@@ -39,7 +41,9 @@ def expm_multiply(
     a reusable factory that accepts times while retaining the operator-dependent
     plan.
     """
-    max_degree, max_scaling = _validate_static_options(max_degree, max_scaling)
+    max_degree, max_scaling = _validate_static_options(
+        max_degree, max_scaling, algorithm
+    )
     flat_like, _ = _validate_vector_space(v_like)
     if norm_estimator is None:
         norm_estimator = (
@@ -48,7 +52,7 @@ def expm_multiply(
             else onenormest()
         )
     tolerance = _resolve_tolerance(flat_like.dtype, tol)
-    planned_times = None if times is None else _validate_times(times)
+    planned_times = None if times is None else _validate_times(times, algorithm)
     theta = _theta(flat_like.dtype, tolerance, max_degree)
     mu, norm, matrix, use_norm = _build_operator_plan(
         planned_times,
@@ -70,7 +74,18 @@ def expm_multiply(
     )
 
     def at_times(action_times):
-        action_times = _validate_times(action_times)
+        action_times = _validate_times(action_times, algorithm)
+        if algorithm == "time_grid":
+            return _time_grid_action(
+                action_times,
+                matvec,
+                parameters,
+                mu,
+                select,
+                tol=tolerance,
+                max_degree=max_degree,
+                while_loop=while_loop,
+            )
         scalar_time = action_times.ndim == 0
         degrees, scalings, valid = select(action_times)
         return _taylor_action(
@@ -102,7 +117,7 @@ def _resolve_tolerance(dtype, tol):
     return tolerance
 
 
-def _validate_static_options(max_degree, max_scaling):
+def _validate_static_options(max_degree, max_scaling, algorithm):
     max_degree = _as_integer(max_degree, "max_degree")
     if not 1 <= max_degree <= 55:
         raise ValueError("max_degree must be an integer between one and 55")
@@ -110,6 +125,8 @@ def _validate_static_options(max_degree, max_scaling):
         max_scaling = _as_integer(max_scaling, "max_scaling")
         if max_scaling < 1:
             raise ValueError("max_scaling must be a positive integer or None")
+    if algorithm not in ("parallel", "time_grid"):
+        raise ValueError("algorithm must be 'parallel' or 'time_grid'")
     return max_degree, max_scaling
 
 
@@ -125,10 +142,12 @@ def _as_integer(value, name):
         raise ValueError(f"{name} must be an integer") from None
 
 
-def _validate_times(times):
+def _validate_times(times, algorithm="parallel"):
     times = jnp.asarray(times)
     if times.ndim > 1:
         raise ValueError("times must be a scalar or one-dimensional array")
     if times.size == 0:
         raise ValueError("times must contain at least one time point")
+    if algorithm == "time_grid" and (times.ndim != 1 or times.size < 2):
+        raise ValueError("time_grid requires at least two time points")
     return times
