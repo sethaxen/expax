@@ -2,10 +2,9 @@
 
 The numerical algorithms are based on:
 
-Awad H. Al-Mohy and Nicholas J. Higham, *Computing the Action of the Matrix
-Exponential, with an Application to Exponential Integrators*, MIMS EPrint
-2010.30, Manchester Institute for Mathematical Sciences, 2010.
+Awad H. Al-Mohy and Nicholas J. Higham,
+*Computing the Action of the Matrix Exponential, with an Application to Exponential Integrators.*
+SIAM Journal on Scientific Computing 2011, 33 (2). pp. 488-511. ISSN 1064-8275
+doi: [10.1137/100788860](https://doi.org/10.1137/100788860),
+eprint: [eprints.maths.manchester.ac.uk/id/eprint/1591](http://eprints.maths.manchester.ac.uk/id/eprint/1591)
 
-The implementation follows Code Fragment 3.1 and Algorithm 3.2 for individual
-actions, equation (3.14) for reusable time selection, and Code Fragment 5.1 and
-Algorithm 5.2 for equally spaced time points.
