@@ -69,6 +69,25 @@ def test_expm_multiply_uses_default_norm_estimator_for_none():
     np.testing.assert_allclose(received, expected, rtol=1e-13, atol=1e-13)
 
 
+@pytest.mark.parametrize("dimension", [1, 2])
+def test_expm_multiply_defaults_support_small_vector_spaces(dimension):
+    matrix = jnp.diag(jnp.arange(1, dimension + 1, dtype=jnp.float64))
+    vector = jnp.arange(1, dimension + 1, dtype=jnp.float64)
+    time = jnp.array(0.2)
+
+    action = expax.expm_multiply(
+        _dense_matvec,
+        matrix,
+        times=time,
+        v_like=jnp.zeros_like(vector),
+        key=jax.random.key(1),
+    )
+    received = action(vector)
+    expected = scipy.linalg.expm(float(time) * np.asarray(matrix)) @ np.asarray(vector)
+
+    np.testing.assert_allclose(received, expected, rtol=1e-13, atol=1e-13)
+
+
 def test_expm_multiply_deferred_time_matches_known_time():
     matrix = jnp.array([[2.0, -1.0, 0.0], [0.0, 3.0, 4.0], [1.0, 0.0, -2.0]])
     vector = jnp.array([1.0, 2.0, -1.0])
@@ -198,6 +217,22 @@ def test_expm_multiply_rejects_invalid_max_scaling(max_scaling):
             norm_estimator=(_exact_norm_estimator, 8),
             max_scaling=max_scaling,
         )
+
+
+def test_expm_multiply_accepts_numpy_integer_options():
+    action = expax.expm_multiply(
+        _dense_matvec,
+        jnp.eye(3),
+        times=jnp.array(0.5),
+        v_like=jnp.zeros(3),
+        key=jax.random.key(0),
+        trace_estimator=_known_trace,
+        norm_estimator=(_exact_norm_estimator, 8),
+        max_degree=np.int64(5),
+        max_scaling=np.int64(10),
+    )
+
+    np.testing.assert_allclose(action(jnp.ones(3)), jnp.exp(0.5) * jnp.ones(3))
 
 
 @pytest.mark.parametrize("tol", [0.0, -1.0, jnp.inf, jnp.nan])

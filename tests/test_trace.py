@@ -50,14 +50,17 @@ def test_default_trace_estimator_avoids_materialization(dimension, expected_call
 
 
 @pytest.mark.parametrize("dimension", [1, 2])
-def test_default_trace_estimator_rejects_too_small_spaces(dimension):
-    with pytest.raises(ValueError, match="dimension"):
-        _default_trace_estimator(
-            _dense_matvec,
-            jnp.zeros(dimension),
-            jax.random.key(0),
-            jnp.eye(dimension),
-        )
+def test_default_trace_estimator_is_exact_for_small_spaces(dimension):
+    matrix = jnp.diag(jnp.arange(1, dimension + 1, dtype=jnp.float64))
+
+    received = _default_trace_estimator(
+        _dense_matvec,
+        jnp.zeros(dimension),
+        jax.random.key(0),
+        matrix,
+    )
+
+    np.testing.assert_allclose(received, jnp.trace(matrix))
 
 
 def test_operator_plan_uses_finite_trace_shift():

@@ -2,7 +2,8 @@
 
 import math
 from collections.abc import Callable
-from typing import Any
+from operator import index
+from typing import Any, SupportsIndex
 
 import jax
 import jax.numpy as jnp
@@ -11,6 +12,7 @@ from expax._operator import _validate_vector_space
 from expax._planning import (
     _build_operator_plan,
     _default_trace_estimator,
+    _exact_1_norm_estimator,
     _make_selector,
 )
 from expax._taylor import _taylor_action
@@ -26,8 +28,8 @@ def expm_multiply(
     key,
     trace_estimator=_default_trace_estimator,
     norm_estimator=None,
-    max_degree=55,
-    max_scaling=None,
+    max_degree: SupportsIndex = 55,
+    max_scaling: SupportsIndex | None = None,
     tol=None,
     while_loop=jax.lax.while_loop,
 ) -> Callable[..., Any]:
@@ -37,10 +39,14 @@ def expm_multiply(
     a reusable factory that accepts times while retaining the operator-dependent
     plan.
     """
-    _validate_static_options(max_degree, max_scaling)
+    max_degree, max_scaling = _validate_static_options(max_degree, max_scaling)
     flat_like, _ = _validate_vector_space(v_like)
     if norm_estimator is None:
-        norm_estimator = onenormest()
+        norm_estimator = (
+            (_exact_1_norm_estimator, flat_like.size)
+            if flat_like.size < 3
+            else onenormest()
+        )
     tolerance = _resolve_tolerance(flat_like.dtype, tol)
     planned_times = None if times is None else _validate_times(times)
     theta = _theta(flat_like.dtype, tolerance, max_degree)
@@ -97,18 +103,23 @@ def _resolve_tolerance(dtype, tol):
 
 
 def _validate_static_options(max_degree, max_scaling):
-    if (
-        not isinstance(max_degree, int)
-        or isinstance(max_degree, bool)
-        or not 1 <= max_degree <= 55
-    ):
+    max_degree = _as_integer(max_degree, "max_degree")
+    if not 1 <= max_degree <= 55:
         raise ValueError("max_degree must be an integer between one and 55")
-    if max_scaling is not None and (
-        not isinstance(max_scaling, int)
-        or isinstance(max_scaling, bool)
-        or max_scaling < 1
-    ):
-        raise ValueError("max_scaling must be a positive integer or None")
+    if max_scaling is not None:
+        max_scaling = _as_integer(max_scaling, "max_scaling")
+        if max_scaling < 1:
+            raise ValueError("max_scaling must be a positive integer or None")
+    return max_degree, max_scaling
+
+
+def _as_integer(value, name):
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be an integer")
+    try:
+        return int(index(value))
+    except TypeError:
+        raise ValueError(f"{name} must be an integer") from None
 
 
 def _validate_times(times):
