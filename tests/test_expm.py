@@ -1,6 +1,7 @@
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 import scipy.linalg
 from jax.flatten_util import ravel_pytree
 
@@ -167,3 +168,92 @@ def test_deferred_time_selection_reuses_operator_plan():
 
     assert calls_after_first == 4
     assert len(estimator_calls) == calls_after_first
+
+
+@pytest.mark.parametrize("max_degree", [0, 56, 1.5, True])
+def test_expm_multiply_rejects_invalid_max_degree(max_degree):
+    with pytest.raises(ValueError, match="max_degree"):
+        expax.expm_multiply(
+            _dense_matvec,
+            jnp.eye(3),
+            times=jnp.array(0.5),
+            v_like=jnp.zeros(3),
+            key=jax.random.key(0),
+            trace_estimator=_known_trace,
+            norm_estimator=(_exact_norm_estimator, 8),
+            max_degree=max_degree,
+        )
+
+
+@pytest.mark.parametrize("max_scaling", [0, -1, 1.5, True])
+def test_expm_multiply_rejects_invalid_max_scaling(max_scaling):
+    with pytest.raises(ValueError, match="max_scaling"):
+        expax.expm_multiply(
+            _dense_matvec,
+            jnp.eye(3),
+            times=jnp.array(0.5),
+            v_like=jnp.zeros(3),
+            key=jax.random.key(0),
+            trace_estimator=_known_trace,
+            norm_estimator=(_exact_norm_estimator, 8),
+            max_scaling=max_scaling,
+        )
+
+
+@pytest.mark.parametrize("tol", [0.0, -1.0, jnp.inf, jnp.nan])
+def test_expm_multiply_rejects_invalid_tolerance(tol):
+    with pytest.raises(ValueError, match="tol"):
+        expax.expm_multiply(
+            _dense_matvec,
+            jnp.eye(3),
+            times=jnp.array(0.5),
+            v_like=jnp.zeros(3),
+            key=jax.random.key(0),
+            trace_estimator=_known_trace,
+            norm_estimator=(_exact_norm_estimator, 8),
+            tol=tol,
+        )
+
+
+@pytest.mark.parametrize("times", [jnp.ones((2, 2)), jnp.array([])])
+def test_expm_multiply_rejects_invalid_time_shapes(times):
+    with pytest.raises(ValueError, match="times"):
+        expax.expm_multiply(
+            _dense_matvec,
+            jnp.eye(3),
+            times=times,
+            v_like=jnp.zeros(3),
+            key=jax.random.key(0),
+            trace_estimator=_known_trace,
+            norm_estimator=(_exact_norm_estimator, 8),
+        )
+
+
+def test_expm_multiply_skips_actions_above_max_scaling():
+    calls = []
+
+    def record(_):
+        calls.append(None)
+
+    def matvec(vector, matrix):
+        jax.debug.callback(record, vector[0])
+        return matrix @ vector
+
+    def norm_estimator(*_):
+        return jnp.array(1.0)
+
+    action = expax.expm_multiply(
+        matvec,
+        jnp.eye(3),
+        times=jnp.array(100.0),
+        v_like=jnp.zeros(3),
+        key=jax.random.key(0),
+        trace_estimator=lambda *_: jnp.array(0.0),
+        norm_estimator=(norm_estimator, 8),
+        max_scaling=1,
+    )
+    received = jax.jit(action)(jnp.ones(3))
+    jax.block_until_ready(received)
+
+    assert jnp.all(jnp.isnan(received))
+    assert not calls
