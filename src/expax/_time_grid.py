@@ -105,8 +105,12 @@ def _time_grid_action(
 
 def _is_evenly_spaced(times, step_size):
     real_dtype = jnp.real(jnp.asarray(step_size)).dtype
-    scale = jnp.maximum(1, jnp.max(jnp.abs(times)))
-    tolerance = 32 * jnp.finfo(real_dtype).eps * scale
+    dtype_info = jnp.finfo(real_dtype)
+    scale = jnp.abs(times[-1] - times[0])
+    tolerance = 32 * jnp.maximum(
+        dtype_info.eps * scale,
+        dtype_info.smallest_subnormal,
+    )
     differences = jnp.diff(times)
     return jnp.all(jnp.isfinite(times)) & jnp.all(
         jnp.abs(differences - step_size) <= tolerance

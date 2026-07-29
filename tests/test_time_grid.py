@@ -78,6 +78,26 @@ def test_time_grid_returns_nan_for_nonuniform_runtime_times():
     assert jnp.all(jnp.isnan(received))
 
 
+def test_time_grid_returns_nan_for_small_nonuniform_times():
+    matrix = jnp.array([[1e16]])
+    vector = jnp.ones(1)
+    times = jnp.array([0.0, 1e-16, 1e-15])
+
+    action = expax.expm_multiply(
+        _dense_matvec,
+        matrix,
+        times=times,
+        v_like=jnp.zeros_like(vector),
+        key=jax.random.key(0),
+        trace_estimator=_known_trace,
+        norm_estimator=(_exact_norm_estimator, 1),
+        algorithm="time_grid",
+    )
+    received = action(vector)
+
+    assert jnp.all(jnp.isnan(received))
+
+
 @pytest.mark.parametrize(
     "times",
     [
