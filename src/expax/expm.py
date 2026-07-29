@@ -35,11 +35,51 @@ def expm_multiply(
     while_loop=jax.lax.while_loop,
     algorithm="parallel",
 ) -> Callable[..., Any]:
-    """Construct an action of ``exp(t A)`` on one PyTree-valued vector.
+    """Construct a matrix-exponential action without materializing a matrix.
 
-    Supplying ``times`` returns the vector action directly. Omitting it returns
-    a reusable factory that accepts times while retaining the operator-dependent
-    plan.
+    Args:
+        matvec: Callable ``matvec(vector, *parameters)`` representing the linear
+            operator. Its input and output are PyTrees with the structure described
+            by ``v_like``.
+        *parameters: Differentiable runtime parameters passed to ``matvec``.
+        times: A scalar time or a one-dimensional array of times. Supplying times
+            returns the vector action directly. Omitting them returns a reusable
+            factory ``times -> action`` that retains the operator-dependent plan.
+        v_like: A PyTree of JAX arrays describing the vector-space structure,
+            shapes, and common inexact dtype. Its values are ignored.
+        key: Random key used by stochastic planning estimators.
+        trace_estimator: Callable
+            ``estimator(matvec, v_like, key, *parameters) -> trace``. The default
+            uses two-sample XTrace when the dimension permits it.
+        norm_estimator: Pair ``(estimator, cost)``. The estimator has the same
+            calling convention as ``trace_estimator`` and estimates the operator
+            1-norm; ``cost`` is its number of scalar ``matvec`` applications.
+            ``None`` selects :func:`expax.normest.onenormest` when the dimension
+            permits it and exact basis actions for dimensions one and two.
+        max_degree: Maximum Taylor degree, between 1 and 55.
+        max_scaling: Optional upper bound on a selected scaling count. An action
+            whose plan exceeds the bound returns NaN leaves without entering its
+            scaling loop.
+        tol: Positive finite Taylor tolerance. The default is half the machine
+            epsilon of the vector-space dtype.
+        while_loop: Callable with the
+            ``while_loop(cond_fun, body_fun, init_val) -> final_val`` contract.
+            It implements runtime-dependent scaling and time-grid loops.
+        algorithm: ``"parallel"`` evaluates arbitrary times with synchronized
+            lanes. ``"time_grid"`` uses Algorithm 5.2 and requires the supplied
+            times to be equally spaced; equal spacing is not checked at runtime.
+
+    Returns:
+        If ``times`` is supplied, a callable ``vector -> result``. Otherwise, a
+        callable ``times -> (vector -> result)``. Scalar-time results have the
+        vector's PyTree shapes. Array-time results add a leading time axis to every
+        leaf.
+
+    Note:
+        Planning is stopped from differentiation. Only the returned Taylor action
+        is differentiated. JAX's default dynamic ``while_loop`` supports forward
+        mode but not reverse mode; inject a reverse-mode-compatible implementation
+        when reverse-mode differentiation is required.
     """
     max_degree, max_scaling = _validate_static_options(
         max_degree, max_scaling, algorithm

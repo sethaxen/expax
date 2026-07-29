@@ -6,6 +6,7 @@ build-backend = "hatchling.build"
 name = "expax"
 version = "0.1.0"
 description = "Matrix-exponential actions in JAX"
+readme = "README.md"
 requires-python = ">=3.11"
 license = "BSD-3-Clause"
 authors = [
