@@ -41,11 +41,10 @@ def _all_columns_parallel(left, right):
     return jnp.all(jnp.any(jnp.isclose(inner_products, left.shape[-1]), axis=-1))
 
 
-def _sample_sign_vector(key, size, dtype):
-    key, sample_key = jax.random.split(key)
-    real_dtype = jnp.real(jnp.zeros((), dtype=dtype)).dtype
-    sample = jax.random.rademacher(sample_key, (size,), dtype=real_dtype)
-    return key, sample.astype(dtype)
+def _sample_real_signs(key, size, dtype):
+    rdtype = jnp.dtype(dtype).type(0).real.dtype
+    sample = jax.random.rademacher(key, size, dtype=rdtype)
+    return sample.astype(dtype)
 
 
 def _resample_until_independent(key, vector, others):
@@ -55,26 +54,33 @@ def _resample_until_independent(key, vector, others):
 
     def body_fun(state):
         next_key, _ = state
-        return _sample_sign_vector(next_key, vector.size, vector.dtype)
+        next_key, sample_key = jax.random.split(next_key)
+        samples = _sample_real_signs(sample_key, (vector.size,), dtype=vector.dtype)
+        return next_key, samples
 
-    return jax.lax.while_loop(cond_fun, body_fun, (key, vector))
+    _, samples = jax.lax.while_loop(cond_fun, body_fun, (key, vector))
+    return samples
 
 
 def _initial_block(key, size, block_size, dtype):
     block = jnp.ones((block_size, size), dtype=dtype)
     for column in range(1, block_size):
-        key, candidate = _sample_sign_vector(key, size, dtype)
-        key, candidate = _resample_until_independent(key, candidate, block[:column])
+        key, sample_key, resample_key = jax.random.split(key, 3)
+        candidate = _sample_real_signs(sample_key, (size,), dtype=dtype)
+        candidate = _resample_until_independent(resample_key, candidate, block[:column])
         block = block.at[column].set(candidate)
     return key, block / size
 
 
 def _resample_parallel_columns(key, block, previous):
+    sample_keys = jax.random.split(key, block.shape[0])
     for column in range(block.shape[0]):
         forbidden = jnp.concatenate((block[:column], previous), axis=0)
-        key, candidate = _resample_until_independent(key, block[column], forbidden)
+        candidate = _resample_until_independent(
+            sample_keys[column], block[column], forbidden
+        )
         block = block.at[column].set(candidate)
-    return key, block
+    return block
 
 
 def _estimate_norm_factory(block_size, max_steps):
@@ -164,8 +170,9 @@ def _estimate_norm_factory(block_size, max_steps):
                             )
 
                         def continue_with_adjoint(_):
-                            next_key, signs_unique = _resample_parallel_columns(
-                                key, signs, previous_signs
+                            next_key, resample_key = jax.random.split(key)
+                            signs_unique = _resample_parallel_columns(
+                                resample_key, signs, previous_signs
                             )
                             adjoint_image = matmat_adjoint(signs_unique)
                             row_norms = jnp.max(jnp.abs(adjoint_image), axis=0)
