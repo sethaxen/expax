@@ -31,8 +31,8 @@ def _sign_round_up(values):
 
 
 def _is_parallel_to_any(vector, others):
-    inner_products = jnp.abs(jnp.sum(jnp.conj(others) * vector, axis=-1))
-    return jnp.any(jnp.isclose(inner_products, vector.size))
+    inner_products = jax.vmap(lambda v: jnp.vdot(v, vector), in_axes=0)(others)
+    return jnp.any(jnp.isclose(jnp.abs(inner_products), vector.size))
 
 
 def _all_columns_parallel(left, right):
