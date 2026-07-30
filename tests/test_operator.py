@@ -18,13 +18,13 @@ def _assert_tree_allclose(received, expected):
 def test_linear_adjoint_transposes_real_array_operator():
     matrix = jnp.array([[1.0, 2.0], [3.0, 4.0]])
 
-    def matvec(x, matrix):
+    def matvec(x):
         return matrix @ x
 
     vector = jnp.array([2.0, -1.0])
     adjoint = _linear_adjoint(matvec, jnp.zeros_like(vector))
 
-    np.testing.assert_allclose(adjoint(vector, matrix), matrix.T @ vector)
+    np.testing.assert_allclose(adjoint(vector)[0], matrix.T @ vector)
 
 
 def test_linear_adjoint_is_hermitian_for_complex_pytree():
@@ -37,7 +37,7 @@ def test_linear_adjoint_is_hermitian_for_complex_pytree():
         dtype=jnp.complex128,
     )
 
-    def matvec(x, matrix):
+    def matvec(x):
         flat, unravel = ravel_pytree(x)
         return unravel(matrix @ flat)
 
@@ -48,7 +48,7 @@ def test_linear_adjoint_is_hermitian_for_complex_pytree():
     adjoint = _linear_adjoint(matvec, v_like)
     flat, unravel = ravel_pytree(vector)
 
-    _assert_tree_allclose(adjoint(vector, matrix), unravel(matrix.T.conj() @ flat))
+    _assert_tree_allclose(adjoint(vector)[0], unravel(matrix.T.conj() @ flat))
 
 
 def test_validate_vector_space_returns_coordinate_map():

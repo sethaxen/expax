@@ -85,23 +85,12 @@ def _estimate_norm_factory(block_size, max_steps):
                 "block_size must be smaller than the vector-space dimension"
             )
 
-        adjoint = _linear_adjoint(matvec, v_like)
+        def matvec_flat(vector):
+            return ravel_pytree(matvec(unravel(vector), *parameters))[0]
 
-        def apply(block):
-            def apply_one(vector):
-                result = matvec(unravel(vector), *parameters)
-                flat_result, _ = ravel_pytree(result)
-                return flat_result
-
-            return jax.vmap(apply_one)(block)
-
-        def apply_adjoint(block):
-            def apply_one(vector):
-                result = adjoint(unravel(vector), *parameters)
-                flat_result, _ = ravel_pytree(result)
-                return flat_result
-
-            return jax.vmap(apply_one)(block)
+        vecmat_flat_adjoint = _linear_adjoint(matvec_flat, flat_like)
+        matmat = jax.vmap(matvec_flat)
+        matmat_adjoint = jax.vmap(lambda v: vecmat_flat_adjoint(v)[0])
 
         key, block = _initial_block(key, size, block_size, flat_like.dtype)
         real_dtype = jnp.real(flat_like).dtype
@@ -124,7 +113,7 @@ def _estimate_norm_factory(block_size, max_steps):
                     key,
                     _,
                 ) = state
-                image = apply(block)
+                image = matmat(block)
                 column_norms = jnp.sum(jnp.abs(image), axis=-1)
                 candidate = jnp.max(column_norms)
                 no_improvement = (step > 0) & (candidate <= estimate)
@@ -177,7 +166,7 @@ def _estimate_norm_factory(block_size, max_steps):
                             next_key, signs_unique = _resample_parallel_columns(
                                 key, signs, previous_signs
                             )
-                            adjoint_image = apply_adjoint(signs_unique)
+                            adjoint_image = matmat_adjoint(signs_unique)
                             row_norms = jnp.max(jnp.abs(adjoint_image), axis=0)
                             ranked = jnp.argsort(-row_norms, stable=True)
                             repeated_best = (step > 0) & jnp.isclose(

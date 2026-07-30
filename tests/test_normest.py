@@ -117,12 +117,16 @@ def test_onenormest_skips_adjoint_on_final_step(monkeypatch):
     def record(_):
         adjoint_calls.append(None)
 
-    def instrumented_adjoint(_matvec, _v_like):
-        def adjoint(vector, matrix):
-            jax.debug.callback(record, vector[0])
-            return matrix.T @ vector
+    original_linear_adjoint = expax.normest._linear_adjoint
 
-        return adjoint
+    def instrumented_adjoint(func, *primals):
+        adjoint = original_linear_adjoint(func, *primals)
+
+        def instrumented(vector):
+            jax.debug.callback(record, vector[0])
+            return adjoint(vector)
+
+        return instrumented
 
     monkeypatch.setattr(expax.normest, "_linear_adjoint", instrumented_adjoint)
     estimate, _ = expax.normest.onenormest(block_size=2, max_steps=2)
