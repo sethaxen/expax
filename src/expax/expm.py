@@ -55,9 +55,10 @@ def expm_multiply(
             calling convention as ``trace_estimator`` and estimates the operator
             1-norm; ``cost`` models its work in scalar ``matvec`` equivalents for
             the planning criterion. ``None`` selects
-            :func:`expax.normest.onenormest`, whose model is four applications per
-            block column, when the dimension permits it and exact basis actions for
-            dimensions one and two.
+            :func:`expax.normest.onenormest`, whose ``4 * block_size`` model is
+            approximately four batches of ``block_size`` parallel applications,
+            when the dimension permits it, and exact basis actions for dimensions
+            one and two.
         max_degree: Maximum Taylor degree, between 1 and 55.
         max_scaling: Optional upper bound on a selected scaling count. An action
             whose plan exceeds the bound returns NaN leaves without entering its

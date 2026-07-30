@@ -11,6 +11,55 @@ def _dense_matvec(x, matrix):
     return matrix @ x
 
 
+def test_vectors_needing_resampling_prioritizes_earlier_current_vectors():
+    block = jnp.array(
+        [
+            [1.0, 1.0, 1.0, 1.0],
+            [-1.0, -1.0, -1.0, -1.0],
+            [1.0, -1.0, 1.0, -1.0],
+        ]
+    )
+    previous = block[2:]
+
+    received = jax.jit(expax.normest._vectors_needing_resampling)(block, previous)
+
+    np.testing.assert_array_equal(received, [False, True, True])
+
+
+def test_resample_parallel_vectors_uses_one_block_retry_loop():
+    block = jnp.ones((2, 3))
+    previous = jnp.array([[1.0, -1.0, 1.0], [1.0, 1.0, -1.0]])
+
+    jaxpr = jax.make_jaxpr(expax.normest._resample_parallel_vectors)(
+        jax.random.key(0), block, previous
+    ).jaxpr
+
+    assert sum(eqn.primitive.name == "while" for eqn in jaxpr.eqns) == 1
+
+
+def test_resample_parallel_vectors_removes_all_conflicts_at_minimum_dimension():
+    previous = jnp.array([[1.0, 1.0, 1.0], [1.0, -1.0, 1.0]])
+
+    received = jax.jit(expax.normest._resample_parallel_vectors)(
+        jax.random.key(0), previous, previous
+    )
+
+    needs_resampling = expax.normest._vectors_needing_resampling(received, previous)
+    assert not bool(jnp.any(needs_resampling))
+
+
+def test_initial_block_is_normalized_and_has_no_parallel_vectors():
+    _, received = jax.jit(expax.normest._initial_block, static_argnums=(1, 2, 3))(
+        jax.random.key(0), 4, 3, jnp.float32
+    )
+
+    np.testing.assert_array_equal(received[0], jnp.full(4, 0.25))
+    unscaled = received * received.shape[-1]
+    previous = jnp.empty((0, received.shape[-1]), dtype=received.dtype)
+    needs_resampling = expax.normest._vectors_needing_resampling(unscaled, previous)
+    assert not bool(jnp.any(needs_resampling))
+
+
 def test_onenormest_reports_code_fragment_3_1_cost():
     _, cost = expax.normest.onenormest(block_size=3)
 

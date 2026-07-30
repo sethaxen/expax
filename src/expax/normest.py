@@ -10,8 +10,10 @@ from expax._operator import _linear_adjoint, _validate_vector_space
 def onenormest(*, block_size=2, max_steps=5):
     """Construct a block 1-norm estimator and its scalar-matvec cost model.
 
-    The estimator implements Higham--Tisseur Algorithm 2.4. Its reported cost is
-    the ``4 * block_size`` model used in Al-Mohy--Higham equation (3.12).
+    The estimator implements Higham--Tisseur Algorithm 2.4. Each batch applies
+    ``block_size`` vectors in parallel, allowing matrix-backed operators to expose
+    matrix--matrix kernels analogous to level-3 BLAS. Its reported scalar-matvec
+    cost is the ``4 * block_size`` model used in Al-Mohy--Higham equation (3.12).
     """
     if (
         not isinstance(block_size, int)
@@ -31,14 +33,28 @@ def _sign_round_up(values):
     return jnp.where(magnitudes == 0, jnp.ones_like(sign), sign)
 
 
-def _is_parallel_to_any(vector, others):
-    inner_products = jax.vmap(lambda v: jnp.vdot(v, vector), in_axes=0)(others)
-    return jnp.any(jnp.isclose(jnp.abs(inner_products), vector.size))
-
-
-def _all_columns_parallel(left, right):
+def _parallel_vectors(left, right):
     inner_products = jnp.abs(jnp.conj(left) @ right.T)
-    return jnp.all(jnp.any(jnp.isclose(inner_products, left.shape[-1]), axis=-1))
+    return jnp.isclose(inner_products, left.shape[-1])
+
+
+def _all_vectors_parallel(left, right):
+    return jnp.all(jnp.any(_parallel_vectors(left, right), axis=-1))
+
+
+def _vectors_needing_resampling(block, previous):
+    block_size = block.shape[0]
+    vector = jnp.arange(block_size)
+    earlier = vector[None, :] < vector[:, None]
+    comparisons = jnp.concatenate(
+        (
+            earlier,
+            jnp.ones((block_size, previous.shape[0]), dtype=bool),
+        ),
+        axis=1,
+    )
+    others = jnp.concatenate((block, previous), axis=0)
+    return jnp.any(_parallel_vectors(block, others) & comparisons, axis=-1)
 
 
 def _sample_real_signs(key, size, dtype):
@@ -47,39 +63,33 @@ def _sample_real_signs(key, size, dtype):
     return sample.astype(dtype)
 
 
-def _resample_until_independent(key, vector, others):
-    def cond_fun(state):
-        _, candidate = state
-        return _is_parallel_to_any(candidate, others)
-
-    def body_fun(state):
-        next_key, _ = state
-        next_key, sample_key = jax.random.split(next_key)
-        samples = _sample_real_signs(sample_key, (vector.size,), dtype=vector.dtype)
-        return next_key, samples
-
-    _, samples = jax.lax.while_loop(cond_fun, body_fun, (key, vector))
-    return samples
-
-
 def _initial_block(key, size, block_size, dtype):
-    block = jnp.ones((block_size, size), dtype=dtype)
-    for column in range(1, block_size):
-        key, sample_key, resample_key = jax.random.split(key, 3)
-        candidate = _sample_real_signs(sample_key, (size,), dtype=dtype)
-        candidate = _resample_until_independent(resample_key, candidate, block[:column])
-        block = block.at[column].set(candidate)
+    key, sample_key, resample_key = jax.random.split(key, 3)
+    samples = _sample_real_signs(sample_key, (block_size - 1, size), dtype=dtype)
+    block = jnp.concatenate((jnp.ones((1, size), dtype=dtype), samples), axis=0)
+    previous = jnp.empty((0, size), dtype=dtype)
+    block = _resample_parallel_vectors(resample_key, block, previous)
     return key, block / size
 
 
-def _resample_parallel_columns(key, block, previous):
-    sample_keys = jax.random.split(key, block.shape[0])
-    for column in range(block.shape[0]):
-        forbidden = jnp.concatenate((block[:column], previous), axis=0)
-        candidate = _resample_until_independent(
-            sample_keys[column], block[column], forbidden
+def _resample_parallel_vectors(key, block, previous):
+    needs_resampling = _vectors_needing_resampling(block, previous)
+
+    def cond_fun(state):
+        return jnp.any(state[-1])
+
+    def body_fun(state):
+        next_key, current, needs_resampling = state
+        next_key, sample_key = jax.random.split(next_key)
+        samples = _sample_real_signs(sample_key, current.shape, current.dtype)
+        current = jnp.where(needs_resampling[:, None], samples, current)
+        return (
+            next_key,
+            current,
+            _vectors_needing_resampling(current, previous),
         )
-        block = block.at[column].set(candidate)
+
+    _, block, _ = jax.lax.while_loop(cond_fun, body_fun, (key, block, needs_resampling))
     return block
 
 
@@ -121,8 +131,8 @@ def _estimate_norm_factory(block_size, max_steps):
                     _,
                 ) = state
                 image = matmat(block)
-                column_norms = jnp.sum(jnp.abs(image), axis=-1)
-                candidate = jnp.max(column_norms)
+                vector_norms = jnp.sum(jnp.abs(image), axis=-1)
+                candidate = jnp.max(vector_norms)
                 no_improvement = (step > 0) & (candidate <= estimate)
 
                 def stop_without_adjoint(_):
@@ -151,10 +161,10 @@ def _estimate_norm_factory(block_size, max_steps):
                         )
 
                     def process_signs(_):
-                        best_column = jnp.argmax(column_norms)
-                        best_index = indices[best_column]
+                        best_vector = jnp.argmax(vector_norms)
+                        best_index = indices[best_vector]
                         signs = _sign_round_up(image)
-                        signs_repeated = (step > 0) & _all_columns_parallel(
+                        signs_repeated = (step > 0) & _all_vectors_parallel(
                             signs, previous_signs
                         )
 
@@ -171,7 +181,7 @@ def _estimate_norm_factory(block_size, max_steps):
 
                         def continue_with_adjoint(_):
                             next_key, resample_key = jax.random.split(key)
-                            signs_unique = _resample_parallel_columns(
+                            signs_unique = _resample_parallel_vectors(
                                 resample_key, signs, previous_signs
                             )
                             adjoint_image = matmat_adjoint(signs_unique)
