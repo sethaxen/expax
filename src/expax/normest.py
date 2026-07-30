@@ -27,7 +27,8 @@ def onenormest(*, block_size=2, max_steps=5):
 
 def _sign_round_up(values):
     magnitudes = jnp.abs(values)
-    return jnp.where(magnitudes == 0, jnp.ones_like(values), values / magnitudes)
+    sign = values / magnitudes
+    return jnp.where(magnitudes == 0, jnp.ones_like(sign), sign)
 
 
 def _is_parallel_to_any(vector, others):
