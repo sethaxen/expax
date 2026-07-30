@@ -24,18 +24,16 @@ def onenormest(*, block_size=2, max_steps=5):
     if not isinstance(max_steps, int) or isinstance(max_steps, bool) or max_steps < 2:
         raise ValueError("max_steps must be an integer of at least two")
 
-    return _estimate_norm_factory(block_size, max_steps), 4 * block_size
+    return _onenormest(block_size, max_steps), 4 * block_size
 
 
 def _sign_round_up(values):
     magnitudes = jnp.abs(values)
-    sign = values / magnitudes
-    return jnp.where(magnitudes == 0, jnp.ones_like(sign), sign)
+    return jnp.where(magnitudes == 0, 1.0, values / magnitudes)
 
 
 def _parallel_vectors(left, right):
-    inner_products = jnp.abs(jnp.conj(left) @ right.T)
-    return jnp.isclose(inner_products, left.shape[-1])
+    return jnp.isclose(jnp.abs(jnp.inner(left, right)), left.shape[-1])
 
 
 def _all_vectors_parallel(left, right):
@@ -45,7 +43,7 @@ def _all_vectors_parallel(left, right):
 def _vectors_needing_resampling(block, previous):
     block_size = block.shape[0]
     vector = jnp.arange(block_size)
-    earlier = vector[None, :] < vector[:, None]
+    earlier = vector < vector[:, None]
     comparisons = jnp.concatenate(
         (
             earlier,
@@ -76,7 +74,8 @@ def _resample_parallel_vectors(key, block, previous):
     needs_resampling = _vectors_needing_resampling(block, previous)
 
     def cond_fun(state):
-        return jnp.any(state[-1])
+        _, _, needs_resampling = state
+        return jnp.any(needs_resampling)
 
     def body_fun(state):
         next_key, current, needs_resampling = state
@@ -93,9 +92,10 @@ def _resample_parallel_vectors(key, block, previous):
     return block
 
 
-def _estimate_norm_factory(block_size, max_steps):
+def _onenormest(block_size, max_steps):
     def estimate_norm(matvec, v_like, key, *parameters):
         flat_like, unravel = _validate_vector_space(v_like)
+        real_dtype = jnp.real(flat_like).dtype
         size = flat_like.size
         if block_size >= size:
             raise ValueError(
@@ -110,7 +110,6 @@ def _estimate_norm_factory(block_size, max_steps):
         matmat_adjoint = jax.vmap(lambda v: vecmat_flat_adjoint(v)[0])
 
         key, block = _initial_block(key, size, block_size, flat_like.dtype)
-        real_dtype = jnp.real(flat_like).dtype
         estimate = jnp.zeros((), dtype=real_dtype)
         previous_signs = jnp.zeros_like(block)
         indices = jnp.zeros((block_size,), dtype=jnp.int32)
