@@ -26,6 +26,33 @@ def test_vectors_needing_resampling_prioritizes_earlier_current_vectors():
     np.testing.assert_array_equal(received, [False, True, True])
 
 
+def test_onenormest_skips_parallel_sign_checks_for_complex(monkeypatch):
+    calls = {"all_parallel": 0, "resample": 0}
+    original_all_parallel = expax.normest._all_vectors_parallel
+    original_resample = expax.normest._resample_parallel_vectors
+
+    def record_all_parallel(*args):
+        calls["all_parallel"] += 1
+        return original_all_parallel(*args)
+
+    def record_resample(*args):
+        calls["resample"] += 1
+        return original_resample(*args)
+
+    monkeypatch.setattr(expax.normest, "_all_vectors_parallel", record_all_parallel)
+    monkeypatch.setattr(expax.normest, "_resample_parallel_vectors", record_resample)
+    estimate, _ = expax.normest.onenormest(block_size=2)
+
+    estimate(
+        _dense_matvec,
+        jnp.zeros(3, dtype=jnp.complex64),
+        jax.random.key(0),
+        jnp.eye(3, dtype=jnp.complex64),
+    )
+
+    assert calls == {"all_parallel": 0, "resample": 1}
+
+
 def test_resample_parallel_vectors_uses_one_block_retry_loop():
     block = jnp.ones((2, 3))
     previous = jnp.array([[1.0, -1.0, 1.0], [1.0, 1.0, -1.0]])

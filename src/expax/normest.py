@@ -96,6 +96,9 @@ def _onenormest(block_size, max_steps):
     def estimate_norm(matvec, v_like, key, *parameters):
         flat_like, unravel = _validate_vector_space(v_like)
         real_dtype = jnp.real(flat_like).dtype
+        check_sign_parallelism = not jnp.issubdtype(
+            flat_like.dtype, jnp.complexfloating
+        )
         size = flat_like.size
         if block_size >= size:
             raise ValueError(
@@ -163,9 +166,12 @@ def _onenormest(block_size, max_steps):
                         best_vector = jnp.argmax(vector_norms)
                         best_index = indices[best_vector]
                         signs = _sign_round_up(image)
-                        signs_repeated = (step > 0) & _all_vectors_parallel(
-                            signs, previous_signs
-                        )
+                        if check_sign_parallelism:
+                            signs_repeated = (step > 0) & _all_vectors_parallel(
+                                signs, previous_signs
+                            )
+                        else:
+                            signs_repeated = jnp.array(False)
 
                         def stop_on_repeated_signs(_):
                             return (
@@ -179,10 +185,13 @@ def _onenormest(block_size, max_steps):
                             )
 
                         def continue_with_adjoint(_):
-                            next_key, resample_key = jax.random.split(key)
-                            signs_unique = _resample_parallel_vectors(
-                                resample_key, signs, previous_signs
-                            )
+                            if check_sign_parallelism:
+                                next_key, resample_key = jax.random.split(key)
+                                signs_unique = _resample_parallel_vectors(
+                                    resample_key, signs, previous_signs
+                                )
+                            else:
+                                next_key, signs_unique = key, signs
                             adjoint_image = matmat_adjoint(signs_unique)
                             row_norms = jnp.max(jnp.abs(adjoint_image), axis=0)
                             ranked = jnp.argsort(-row_norms, stable=True)
