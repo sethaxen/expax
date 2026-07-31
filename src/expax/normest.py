@@ -92,6 +92,39 @@ def _resample_parallel_vectors(key, block, previous):
     return block
 
 
+def _all_sign_vectors_parallel_to_previous(
+    step,
+    sign_vectors,
+    previous_sign_vectors,
+    *,
+    check_parallelism,
+):
+    if not check_parallelism:
+        return jnp.array(False)
+    return (step > 0) & _all_vectors_parallel(
+        sign_vectors,
+        previous_sign_vectors,
+    )
+
+
+def _resample_parallel_sign_vectors(
+    key,
+    sign_vectors,
+    previous_sign_vectors,
+    *,
+    check_parallelism,
+):
+    if not check_parallelism:
+        return key, sign_vectors
+    next_key, resample_key = jax.random.split(key)
+    sign_vectors = _resample_parallel_vectors(
+        resample_key,
+        sign_vectors,
+        previous_sign_vectors,
+    )
+    return next_key, sign_vectors
+
+
 def _onenormest(block_size, max_steps):
     def estimate_norm(matvec, v_like, key, *parameters):
         flat_like, unravel = _validate_vector_space(v_like)
@@ -165,13 +198,15 @@ def _onenormest(block_size, max_steps):
                     def process_signs(_):
                         best_vector = jnp.argmax(vector_norms)
                         best_index = indices[best_vector]
-                        signs = _sign_round_up(image)
-                        if check_sign_parallelism:
-                            signs_repeated = (step > 0) & _all_vectors_parallel(
-                                signs, previous_signs
+                        sign_vectors = _sign_round_up(image)
+                        all_sign_vectors_parallel = (
+                            _all_sign_vectors_parallel_to_previous(
+                                step,
+                                sign_vectors,
+                                previous_signs,
+                                check_parallelism=check_sign_parallelism,
                             )
-                        else:
-                            signs_repeated = jnp.array(False)
+                        )
 
                         def stop_on_repeated_signs(_):
                             return (
@@ -185,14 +220,15 @@ def _onenormest(block_size, max_steps):
                             )
 
                         def continue_with_adjoint(_):
-                            if check_sign_parallelism:
-                                next_key, resample_key = jax.random.split(key)
-                                signs_unique = _resample_parallel_vectors(
-                                    resample_key, signs, previous_signs
+                            next_key, sign_vectors_unique = (
+                                _resample_parallel_sign_vectors(
+                                    key,
+                                    sign_vectors,
+                                    previous_signs,
+                                    check_parallelism=check_sign_parallelism,
                                 )
-                            else:
-                                next_key, signs_unique = key, signs
-                            adjoint_image = matmat_adjoint(signs_unique)
+                            )
+                            adjoint_image = matmat_adjoint(sign_vectors_unique)
                             row_norms = jnp.max(jnp.abs(adjoint_image), axis=0)
                             ranked = jnp.argsort(-row_norms, stable=True)
                             repeated_best = (step > 0) & jnp.isclose(
@@ -213,7 +249,7 @@ def _onenormest(block_size, max_steps):
                             return (
                                 next_block,
                                 next_estimate,
-                                signs_unique,
+                                sign_vectors_unique,
                                 selected,
                                 next_visited,
                                 next_key,
@@ -221,7 +257,7 @@ def _onenormest(block_size, max_steps):
                             )
 
                         return jax.lax.cond(
-                            signs_repeated,
+                            all_sign_vectors_parallel,
                             stop_on_repeated_signs,
                             continue_with_adjoint,
                             operand=None,

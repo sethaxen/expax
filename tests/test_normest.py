@@ -26,31 +26,35 @@ def test_vectors_needing_resampling_prioritizes_earlier_current_vectors():
     np.testing.assert_array_equal(received, [False, True, True])
 
 
-def test_onenormest_skips_parallel_sign_checks_for_complex(monkeypatch):
-    calls = {"all_parallel": 0, "resample": 0}
-    original_all_parallel = expax.normest._all_vectors_parallel
-    original_resample = expax.normest._resample_parallel_vectors
+def test_complex_sign_vectors_never_trigger_parallel_stop():
+    sign_vectors = jnp.array([[1.0, 1j, -1.0, -1j]], dtype=jnp.complex64)
 
-    def record_all_parallel(*args):
-        calls["all_parallel"] += 1
-        return original_all_parallel(*args)
-
-    def record_resample(*args):
-        calls["resample"] += 1
-        return original_resample(*args)
-
-    monkeypatch.setattr(expax.normest, "_all_vectors_parallel", record_all_parallel)
-    monkeypatch.setattr(expax.normest, "_resample_parallel_vectors", record_resample)
-    estimate, _ = expax.normest.onenormest(block_size=2)
-
-    estimate(
-        _dense_matvec,
-        jnp.zeros(3, dtype=jnp.complex64),
-        jax.random.key(0),
-        jnp.eye(3, dtype=jnp.complex64),
+    received = expax.normest._all_sign_vectors_parallel_to_previous(
+        1,
+        sign_vectors,
+        sign_vectors,
+        check_parallelism=False,
     )
 
-    assert calls == {"all_parallel": 0, "resample": 1}
+    assert not bool(received)
+
+
+def test_complex_sign_vectors_are_not_resampled():
+    key = jax.random.key(0)
+    sign_vectors = jnp.array([[1.0, 1j, -1.0, -1j]], dtype=jnp.complex64)
+
+    received_key, received_sign_vectors = expax.normest._resample_parallel_sign_vectors(
+        key,
+        sign_vectors,
+        sign_vectors,
+        check_parallelism=False,
+    )
+
+    np.testing.assert_array_equal(
+        jax.random.key_data(received_key),
+        jax.random.key_data(key),
+    )
+    np.testing.assert_array_equal(received_sign_vectors, sign_vectors)
 
 
 def test_resample_parallel_vectors_uses_one_block_retry_loop():
@@ -85,6 +89,18 @@ def test_initial_block_is_normalized_and_has_no_parallel_vectors():
     previous = jnp.empty((0, received.shape[-1]), dtype=received.dtype)
     needs_resampling = expax.normest._vectors_needing_resampling(unscaled, previous)
     assert not bool(jnp.any(needs_resampling))
+
+
+def test_initial_block_resamples_parallel_real_vectors_stored_as_complex():
+    _, received = expax.normest._initial_block(
+        jax.random.key(4),
+        3,
+        2,
+        jnp.complex64,
+    )
+
+    unscaled = received * received.shape[-1]
+    assert not bool(expax.normest._parallel_vectors(unscaled[:1], unscaled[1:])[0, 0])
 
 
 def test_onenormest_reports_code_fragment_3_1_cost():
