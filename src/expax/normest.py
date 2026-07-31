@@ -15,8 +15,10 @@ def onenormest(*, block_size=2, max_steps=5):
 
     The estimator implements Higham--Tisseur Algorithm 2.4. Each batch applies
     ``block_size`` vectors in parallel, allowing matrix-backed operators to expose
-    matrix--matrix kernels analogous to level-3 BLAS. Its reported scalar-matvec
-    cost is the ``4 * block_size`` model used in Al-Mohy--Higham equation (3.12).
+    matrix--matrix kernels analogous to level-3 BLAS. Whenever the dimension does
+    not exceed its reported cost, it instead evaluates every basis vector exactly.
+    Its reported scalar-matvec cost is the ``4 * block_size`` model used in
+    Al-Mohy--Higham equation (3.12).
     """
     if (
         not isinstance(block_size, int)
@@ -27,7 +29,8 @@ def onenormest(*, block_size=2, max_steps=5):
     if not isinstance(max_steps, int) or isinstance(max_steps, bool) or max_steps < 2:
         raise ValueError("max_steps must be an integer of at least two")
 
-    return _onenormest(block_size, max_steps), 4 * block_size
+    estimator_cost = 4 * block_size
+    return _onenormest(block_size, max_steps, estimator_cost), estimator_cost
 
 
 def _sign_round_up(values):
@@ -334,18 +337,38 @@ def _block_1norm_power_iteration_step(
     )
 
 
-def _onenormest(block_size, max_steps):
+def _operator_products_on_basis_vectors(matvec, v_like, *parameters):
+    flat_like, unravel = _validate_vector_space(v_like)
+    basis_vectors = jnp.eye(flat_like.size, dtype=flat_like.dtype)
+
+    def apply_operator(vector):
+        product, _ = ravel_pytree(matvec(unravel(vector), *parameters))
+        return product
+
+    return jax.vmap(apply_operator)(basis_vectors)
+
+
+def _exact_1_norm_estimator(matvec, v_like, key, *parameters):
+    del key
+    basis_vector_products = _operator_products_on_basis_vectors(
+        matvec, v_like, *parameters
+    )
+    return jnp.max(jnp.sum(jnp.abs(basis_vector_products), axis=-1))
+
+
+def _onenormest(block_size, max_steps, estimator_cost):
     def estimate_norm(matvec, v_like, key, *parameters):
         flat_like, unravel = _validate_vector_space(v_like)
+        if flat_like.size <= estimator_cost:
+            return jax.lax.stop_gradient(
+                _exact_1_norm_estimator(matvec, v_like, key, *parameters)
+            )
+
         real_dtype = jnp.real(flat_like).dtype
         check_sign_parallelism = not jnp.issubdtype(
             flat_like.dtype, jnp.complexfloating
         )
         size = flat_like.size
-        if block_size >= size:
-            raise ValueError(
-                "block_size must be smaller than the vector-space dimension"
-            )
 
         def matvec_flat(vector):
             return ravel_pytree(matvec(unravel(vector), *parameters))[0]

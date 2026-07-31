@@ -12,13 +12,12 @@ from expax._operator import _validate_vector_space
 from expax._planning import (
     _build_operator_plan,
     _default_trace_estimator,
-    _exact_1_norm_estimator,
     _make_selector,
 )
 from expax._taylor import _taylor_action
 from expax._theta import _theta
 from expax._time_grid import _time_grid_action
-from expax.normest import onenormest
+from expax.normest import _exact_1_norm_estimator, onenormest
 
 
 def expm_multiply(
@@ -57,8 +56,9 @@ def expm_multiply(
             the planning criterion. ``None`` selects
             :func:`expax.normest.onenormest`, whose ``4 * block_size`` model is
             approximately four batches of ``block_size`` parallel applications,
-            when the dimension permits it, and exact basis actions for dimensions
-            one and two.
+            and which evaluates every basis vector exactly whenever the dimension
+            does not exceed that cost. The default planner retains its
+            dimension-one/two exact-cost specialization.
         max_degree: Maximum Taylor degree, between 1 and 55.
         max_scaling: Optional upper bound on a selected scaling count. An action
             whose plan exceeds the bound returns NaN leaves without entering its

@@ -110,25 +110,28 @@ def test_onenormest_reports_code_fragment_3_1_cost():
 
 
 @pytest.mark.parametrize("seed", range(4))
-def test_onenormest_is_exact_for_diagonal_operators(seed):
-    matrix = jnp.diag(jnp.array([-2.0, 7.0, 1.0, -4.0]))
+def test_onenormest_is_exact_for_diagonal_operators_above_its_cost(seed):
+    matrix = jnp.diag(jnp.array([-2.0, 7.0, 1.0, -4.0, 3.0, -6.0, 5.0, 2.0, -1.0]))
     estimate, _ = expax.normest.onenormest(block_size=2)
 
-    received = estimate(_dense_matvec, jnp.zeros(4), jax.random.key(seed), matrix)
+    received = estimate(_dense_matvec, jnp.zeros(9), jax.random.key(seed), matrix)
 
     np.testing.assert_allclose(received, 7.0)
 
 
 @pytest.mark.parametrize("seed", range(4))
-def test_onenormest_bounds_complex_nonnormal_operator(seed):
-    matrix = jnp.array(
-        [
-            [1 + 2j, 8 - 3j, 0, 1j],
-            [0, -2j, 5 + 4j, 0],
-            [3, 0, -1 + 1j, 6],
-            [0, 2 - 1j, 0, 4j],
-        ],
-        dtype=jnp.complex128,
+def test_onenormest_bounds_complex_nonnormal_operator_above_its_cost(seed):
+    matrix = jnp.pad(
+        jnp.array(
+            [
+                [1 + 2j, 8 - 3j, 0, 1j],
+                [0, -2j, 5 + 4j, 0],
+                [3, 0, -1 + 1j, 6],
+                [0, 2 - 1j, 0, 4j],
+            ],
+            dtype=jnp.complex128,
+        ),
+        ((0, 5), (0, 5)),
     )
     exact = np.linalg.norm(np.asarray(matrix), ord=1)
     estimate, _ = expax.normest.onenormest(block_size=2)
@@ -136,7 +139,7 @@ def test_onenormest_bounds_complex_nonnormal_operator(seed):
     received = float(
         estimate(
             _dense_matvec,
-            jnp.zeros(4, dtype=jnp.complex128),
+            jnp.zeros(9, dtype=jnp.complex128),
             jax.random.key(seed),
             matrix,
         )
@@ -145,12 +148,15 @@ def test_onenormest_bounds_complex_nonnormal_operator(seed):
     assert exact / 3 <= received <= exact
 
 
-def test_onenormest_accepts_parameterized_pytree_operators():
+def test_onenormest_accepts_parameterized_pytree_operators_above_its_cost():
     v_like = {
-        "left": jnp.zeros(2, dtype=jnp.float64),
-        "right": jnp.zeros(1, dtype=jnp.float64),
+        "left": jnp.zeros(5, dtype=jnp.float64),
+        "right": jnp.zeros(4, dtype=jnp.float64),
     }
-    matrix = jnp.array([[2.0, -1.0, 0.0], [0.0, 3.0, 4.0], [1.0, 0.0, -2.0]])
+    matrix = jnp.pad(
+        jnp.array([[2.0, -1.0, 0.0], [0.0, 3.0, 4.0], [1.0, 0.0, -2.0]]),
+        ((0, 6), (0, 6)),
+    )
 
     def matvec(x, scale, matrix):
         flat, unravel = ravel_pytree(x)
@@ -169,8 +175,11 @@ def test_onenormest_accepts_parameterized_pytree_operators():
     assert exact / 3 <= float(received) <= exact
 
 
-def test_onenormest_handles_operator_powers_without_changing_its_cost():
-    matrix = jnp.array([[2.0, 1.0, 0.0], [0.0, -1.0, 3.0], [1.0, 0.0, 2.0]])
+def test_onenormest_handles_operator_powers_above_its_cost_without_changing_cost():
+    matrix = jnp.pad(
+        jnp.array([[2.0, 1.0, 0.0], [0.0, -1.0, 3.0], [1.0, 0.0, 2.0]]),
+        ((0, 6), (0, 6)),
+    )
     power = 3
 
     def powered_matvec(x, matrix):
@@ -179,7 +188,7 @@ def test_onenormest_handles_operator_powers_without_changing_its_cost():
         return x
 
     estimate, cost = expax.normest.onenormest(block_size=2)
-    received = estimate(powered_matvec, jnp.zeros(3), jax.random.key(5), matrix)
+    received = estimate(powered_matvec, jnp.zeros(9), jax.random.key(5), matrix)
 
     exact = np.linalg.norm(np.linalg.matrix_power(np.asarray(matrix), power), ord=1)
     assert exact / 3 <= float(received) <= exact
@@ -259,11 +268,54 @@ def test_estimate_1norm_from_test_vectors_skips_adjoint_on_final_step():
     assert bool(received.done)
 
 
-def test_onenormest_does_not_materialize_small_operators():
-    estimate, _ = expax.normest.onenormest(block_size=3)
+def test_onenormest_evaluates_below_cost_operators_exactly_under_jit():
+    matrix = jnp.pad(
+        jnp.array([[1.0, 4.0, 0.0], [2.0, -5.0, 0.0], [3.0, 2.0, 1.0]]),
+        ((0, 4), (0, 4)),
+    )
+    estimate, _ = expax.normest.onenormest(block_size=2)
 
-    with pytest.raises(ValueError, match="block_size"):
-        estimate(_dense_matvec, jnp.zeros(3), jax.random.key(0), jnp.eye(3))
+    received = jax.jit(lambda key: estimate(_dense_matvec, jnp.zeros(7), key, matrix))(
+        jax.random.key(0)
+    )
+
+    np.testing.assert_allclose(received, 11.0)
+
+
+def test_onenormest_evaluates_cost_sized_operators_exactly_under_jit():
+    matrix = jnp.pad(
+        jnp.array([[1.0, 4.0, 0.0], [2.0, -5.0, 0.0], [3.0, 2.0, 1.0]]),
+        ((0, 5), (0, 5)),
+    )
+    estimate, _ = expax.normest.onenormest(block_size=2)
+
+    received = jax.jit(lambda key: estimate(_dense_matvec, jnp.zeros(8), key, matrix))(
+        jax.random.key(0)
+    )
+
+    np.testing.assert_allclose(received, 11.0)
+
+
+def test_onenormest_exact_dispatch_avoids_constructing_an_adjoint():
+    def forward_only_matvec(vector):
+        return jax.pure_callback(
+            lambda value: value,
+            jax.ShapeDtypeStruct(vector.shape, vector.dtype),
+            vector,
+            vmap_method="sequential",
+        )
+
+    estimate, _ = expax.normest.onenormest(block_size=2)
+
+    received = jax.jit(lambda key: estimate(forward_only_matvec, jnp.zeros(8), key))(
+        jax.random.key(0)
+    )
+
+    np.testing.assert_allclose(received, 1.0)
+    with pytest.raises(ValueError, match="Pure callbacks do not support transpose"):
+        jax.jit(lambda key: estimate(forward_only_matvec, jnp.zeros(9), key))(
+            jax.random.key(0)
+        )
 
 
 @pytest.mark.parametrize(
