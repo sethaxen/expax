@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -11,9 +9,9 @@ import expax
 
 
 def _dense_matvec(
-    x: Inexact[Array, "dim"],
+    x: Inexact[Array, " dim"],
     matrix: Inexact[Array, "dim dim"],
-) -> Inexact[Array, "dim"]:
+) -> Inexact[Array, " dim"]:
     return matrix @ x
 
 
@@ -195,9 +193,9 @@ def test_onenormest_handles_operator_powers_above_its_cost_without_changing_cost
     power = 3
 
     def powered_matvec(
-        x: Inexact[Array, "dim"],
+        x: Inexact[Array, " dim"],
         matrix: Inexact[Array, "dim dim"],
-    ) -> Inexact[Array, "dim"]:
+    ) -> Inexact[Array, " dim"]:
         for _ in range(power):
             x = matrix @ x
         return x
@@ -328,8 +326,8 @@ def test_onenormest_evaluates_cost_sized_operators_exactly_under_jit() -> None:
 
 def test_onenormest_exact_dispatch_avoids_constructing_an_adjoint() -> None:
     def forward_only_matvec(
-        vector: Inexact[Array, "dim"],
-    ) -> Inexact[Array, "dim"]:
+        vector: Inexact[Array, " dim"],
+    ) -> Inexact[Array, " dim"]:
         return jax.pure_callback(
             lambda value: value,
             jax.ShapeDtypeStruct(vector.shape, vector.dtype),

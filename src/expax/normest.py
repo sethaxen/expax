@@ -1,7 +1,5 @@
 """Composable estimators for operator norms."""
 
-from __future__ import annotations
-
 from collections.abc import Callable
 from functools import partial
 from typing import Any, NamedTuple
@@ -63,7 +61,7 @@ def _all_vectors_parallel(
 def _vectors_needing_resampling(
     block: Inexact[Array, "block dim"],
     previous: Inexact[Array, "prev dim"],
-) -> Bool[Array, "block"]:
+) -> Bool[Array, " block"]:
     block_size = block.shape[0]
     vector = jnp.arange(block_size)
     earlier = vector < vector[:, None]
@@ -165,8 +163,8 @@ class _Block1NormEstimatorState(NamedTuple):
     test_vectors: Inexact[Array, "block dim"]
     estimate: Real[Array, ""]
     previous_sign_vectors: Inexact[Array, "block dim"]
-    test_vector_indices: Int[Array, "block"]
-    visited_basis_indices: Bool[Array, "dim"]
+    test_vector_indices: Int[Array, " block"]
+    visited_basis_indices: Bool[Array, " dim"]
     key: PRNGKeyArray
     done: Bool[Array, ""]
 
@@ -175,7 +173,7 @@ class _ForwardNormEstimate(NamedTuple):
     step: int | Int[Array, ""]
     state: _Block1NormEstimatorState
     test_vector_products: Inexact[Array, "block dim"]
-    product_1norms: Real[Array, "block"]
+    product_1norms: Real[Array, " block"]
 
 
 class _SignVectorIteration(NamedTuple):
@@ -210,11 +208,11 @@ def _finish_on_parallel_sign_vectors(
 
 
 def _select_unvisited_basis_indices(
-    basis_scores: Real[Array, "dim"],
-    visited_basis_indices: Bool[Array, "dim"],
+    basis_scores: Real[Array, " dim"],
+    visited_basis_indices: Bool[Array, " dim"],
     num_test_vectors: int,
     index_dtype: DTypeLike,
-) -> tuple[Int[Array, "block"], Bool[Array, ""]]:
+) -> tuple[Int[Array, " block"], Bool[Array, ""]]:
     ranked = jnp.argsort(-basis_scores, stable=True)
     top_basis_indices_visited = jnp.all(
         visited_basis_indices[ranked[:num_test_vectors]]
@@ -233,13 +231,13 @@ def _score_basis_vectors_with_adjoint(
         [Inexact[Array, "block dim"]],
         Inexact[Array, "block dim"],
     ],
-) -> Real[Array, "dim"]:
+) -> Real[Array, " dim"]:
     adjoint_products = apply_adjoint_to_sign_vectors(sign_vectors)
     return jnp.max(jnp.abs(adjoint_products), axis=0)
 
 
 def _build_basis_test_vectors(
-    basis_indices: Int[Array, "block"],
+    basis_indices: Int[Array, " block"],
     size: int,
     dtype: DTypeLike,
 ) -> Inexact[Array, "block dim"]:
@@ -409,8 +407,8 @@ def _operator_products_on_basis_vectors(
     basis_vectors = jnp.eye(flat_like.size, dtype=flat_like.dtype)
 
     def apply_operator(
-        vector: Inexact[Array, "dim"],
-    ) -> Inexact[Array, "dim"]:
+        vector: Inexact[Array, " dim"],
+    ) -> Inexact[Array, " dim"]:
         product, _ = ravel_pytree(matvec(unravel(vector), *parameters))
         return product
 
@@ -454,8 +452,8 @@ def _onenormest(
         size = flat_like.size
 
         def matvec_flat(
-            vector: Inexact[Array, "dim"],
-        ) -> Inexact[Array, "dim"]:
+            vector: Inexact[Array, " dim"],
+        ) -> Inexact[Array, " dim"]:
             return ravel_pytree(matvec(unravel(vector), *parameters))[0]
 
         apply_adjoint_flat = _linear_adjoint(matvec_flat, flat_like)
