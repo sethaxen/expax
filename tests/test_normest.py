@@ -282,6 +282,17 @@ def test_onenormest_evaluates_below_cost_operators_exactly_under_jit():
     np.testing.assert_allclose(received, 11.0)
 
 
+def test_onenormest_evaluates_exactly_when_block_size_equals_dimension():
+    matrix = jnp.array([[1.0, 4.0], [2.0, -5.0]])
+    estimate, _ = expax.normest.onenormest(block_size=2)
+
+    received = jax.jit(lambda key: estimate(_dense_matvec, jnp.zeros(2), key, matrix))(
+        jax.random.key(0)
+    )
+
+    np.testing.assert_allclose(received, 9.0)
+
+
 def test_onenormest_evaluates_cost_sized_operators_exactly_under_jit():
     matrix = jnp.pad(
         jnp.array([[1.0, 4.0, 0.0], [2.0, -5.0, 0.0], [3.0, 2.0, 1.0]]),
