@@ -134,6 +134,35 @@ def test_expm_multiply_uses_default_norm_estimator_for_none():
     np.testing.assert_allclose(received, expected, rtol=1e-13, atol=1e-13)
 
 
+def test_expm_multiply_none_uses_onenormest_for_small_vector_spaces():
+    matrix = jnp.array([[0.0, 1.0], [0.0, 0.0]])
+    vector = jnp.ones(2)
+    options = {
+        "times": jnp.array(22.0),
+        "v_like": jnp.zeros(2),
+        "key": jax.random.key(1),
+        "max_scaling": 1,
+    }
+
+    default_action = expax.expm_multiply(
+        _dense_matvec,
+        matrix,
+        norm_estimator=None,
+        **options,
+    )
+    explicit_action = expax.expm_multiply(
+        _dense_matvec,
+        matrix,
+        norm_estimator=expax.normest.onenormest(),
+        **options,
+    )
+
+    np.testing.assert_array_equal(
+        jnp.isnan(default_action(vector)),
+        jnp.isnan(explicit_action(vector)),
+    )
+
+
 @pytest.mark.parametrize("dimension", [1, 2])
 def test_expm_multiply_defaults_support_small_vector_spaces(dimension):
     matrix = jnp.diag(jnp.arange(1, dimension + 1, dtype=jnp.float64))

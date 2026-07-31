@@ -111,7 +111,7 @@ A norm estimator is an `(estimator, cost)` pair. Its callable uses the same argu
 `cost` is the work model in scalar `matvec` equivalents used by the planning criterion, rather than a promise of the estimator's exact adaptive runtime count;
 power costs are derived by repeated operator application.
 The default is `expax.normest.onenormest()`, whose `4 * block_size` model is approximately four batches of `block_size` parallel `matvec` applications.
-`onenormest` instead evaluates every basis vector exactly whenever the dimension does not exceed that reported cost; the default planner retains its dimension-one/two exact-cost specialization.
+`onenormest` instead evaluates every basis vector exactly whenever the dimension does not exceed that reported cost.
 For matrix-backed operators, this batching can expose matrix--matrix kernels, analogous to level-3 BLAS.
 
 ## Control flow and autodiff
