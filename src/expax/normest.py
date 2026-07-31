@@ -1,5 +1,8 @@
 """Composable estimators for operator norms."""
 
+from functools import partial
+from typing import NamedTuple
+
 import jax
 import jax.numpy as jnp
 from jax.flatten_util import ravel_pytree
@@ -125,6 +128,212 @@ def _resample_parallel_sign_vectors(
     return next_key, sign_vectors
 
 
+class _Block1NormEstimatorState(NamedTuple):
+    test_vectors: jax.Array
+    estimate: jax.Array
+    previous_sign_vectors: jax.Array
+    test_vector_indices: jax.Array
+    visited_basis_indices: jax.Array
+    key: jax.Array
+    done: jax.Array
+
+
+class _ForwardNormEstimate(NamedTuple):
+    step: jax.Array
+    state: _Block1NormEstimatorState
+    test_vector_products: jax.Array
+    product_1norms: jax.Array
+
+
+class _SignVectorIteration(NamedTuple):
+    step: jax.Array
+    state: _Block1NormEstimatorState
+    sign_vectors: jax.Array
+    best_basis_index: jax.Array
+
+
+def _finish_norm_estimation(state):
+    return state._replace(done=jnp.array(True))
+
+
+def _keep_completed_estimate(state):
+    return state
+
+
+def _finish_after_forward_estimate(forward_estimate):
+    return _finish_norm_estimation(forward_estimate.state)
+
+
+def _finish_on_parallel_sign_vectors(sign_iteration):
+    return _finish_norm_estimation(sign_iteration.state)
+
+
+def _select_unvisited_basis_indices(
+    basis_scores,
+    visited_basis_indices,
+    num_test_vectors,
+    index_dtype,
+):
+    ranked = jnp.argsort(-basis_scores, stable=True)
+    top_basis_indices_visited = jnp.all(
+        visited_basis_indices[ranked[:num_test_vectors]]
+    )
+    unseen_first = jnp.argsort(
+        visited_basis_indices[ranked],
+        stable=True,
+    )
+    selected_basis_indices = ranked[unseen_first[:num_test_vectors]].astype(index_dtype)
+    return selected_basis_indices, top_basis_indices_visited
+
+
+def _score_basis_vectors_with_adjoint(
+    sign_vectors,
+    apply_adjoint_to_sign_vectors,
+):
+    adjoint_products = apply_adjoint_to_sign_vectors(sign_vectors)
+    return jnp.max(jnp.abs(adjoint_products), axis=0)
+
+
+def _build_basis_test_vectors(basis_indices, size, dtype):
+    return jax.nn.one_hot(basis_indices, size, dtype=dtype)
+
+
+def _choose_test_vectors_from_adjoint(
+    sign_iteration,
+    *,
+    apply_adjoint_to_sign_vectors,
+    check_sign_parallelism,
+):
+    state = sign_iteration.state
+    next_key, sign_vectors = _resample_parallel_sign_vectors(
+        state.key,
+        sign_iteration.sign_vectors,
+        state.previous_sign_vectors,
+        check_parallelism=check_sign_parallelism,
+    )
+    basis_scores = _score_basis_vectors_with_adjoint(
+        sign_vectors,
+        apply_adjoint_to_sign_vectors,
+    )
+    selected_basis_indices, top_basis_indices_visited = _select_unvisited_basis_indices(
+        basis_scores,
+        state.visited_basis_indices,
+        state.test_vectors.shape[0],
+        state.test_vector_indices.dtype,
+    )
+    best_basis_still_optimal = (sign_iteration.step > 0) & jnp.isclose(
+        jnp.max(basis_scores),
+        basis_scores[sign_iteration.best_basis_index],
+    )
+    next_visited_basis_indices = state.visited_basis_indices.at[
+        selected_basis_indices
+    ].set(True)
+    next_test_vectors = _build_basis_test_vectors(
+        selected_basis_indices,
+        state.visited_basis_indices.size,
+        state.test_vectors.dtype,
+    )
+    return state._replace(
+        test_vectors=next_test_vectors,
+        previous_sign_vectors=sign_vectors,
+        test_vector_indices=selected_basis_indices,
+        visited_basis_indices=next_visited_basis_indices,
+        key=next_key,
+        done=best_basis_still_optimal | top_basis_indices_visited,
+    )
+
+
+def _choose_next_test_vectors(
+    forward_estimate,
+    *,
+    apply_adjoint_to_sign_vectors,
+    check_sign_parallelism,
+):
+    sign_vectors = _sign_round_up(forward_estimate.test_vector_products)
+    best_test_vector = jnp.argmax(forward_estimate.product_1norms)
+    sign_iteration = _SignVectorIteration(
+        step=forward_estimate.step,
+        state=forward_estimate.state,
+        sign_vectors=sign_vectors,
+        best_basis_index=forward_estimate.state.test_vector_indices[best_test_vector],
+    )
+    choose_from_adjoint = partial(
+        _choose_test_vectors_from_adjoint,
+        apply_adjoint_to_sign_vectors=apply_adjoint_to_sign_vectors,
+        check_sign_parallelism=check_sign_parallelism,
+    )
+    all_sign_vectors_parallel = _all_sign_vectors_parallel_to_previous(
+        forward_estimate.step,
+        sign_vectors,
+        forward_estimate.state.previous_sign_vectors,
+        check_parallelism=check_sign_parallelism,
+    )
+    return jax.lax.cond(
+        all_sign_vectors_parallel,
+        _finish_on_parallel_sign_vectors,
+        choose_from_adjoint,
+        sign_iteration,
+    )
+
+
+def _estimate_1norm_from_test_vectors(
+    state,
+    *,
+    step,
+    apply_operator_to_test_vectors,
+    apply_adjoint_to_sign_vectors,
+    max_steps,
+    check_sign_parallelism,
+):
+    test_vector_products = apply_operator_to_test_vectors(state.test_vectors)
+    product_1norms = jnp.sum(jnp.abs(test_vector_products), axis=-1)
+    candidate_estimate = jnp.max(product_1norms)
+    no_improvement = (step > 0) & (candidate_estimate <= state.estimate)
+    forward_estimate = _ForwardNormEstimate(
+        step=step,
+        state=state._replace(estimate=jnp.maximum(state.estimate, candidate_estimate)),
+        test_vector_products=test_vector_products,
+        product_1norms=product_1norms,
+    )
+    choose_next_test_vectors = partial(
+        _choose_next_test_vectors,
+        apply_adjoint_to_sign_vectors=apply_adjoint_to_sign_vectors,
+        check_sign_parallelism=check_sign_parallelism,
+    )
+    stop_after_forward = no_improvement | (step == max_steps - 1)
+    return jax.lax.cond(
+        stop_after_forward,
+        _finish_after_forward_estimate,
+        choose_next_test_vectors,
+        forward_estimate,
+    )
+
+
+def _block_1norm_power_iteration_step(
+    step,
+    state,
+    *,
+    apply_operator_to_test_vectors,
+    apply_adjoint_to_sign_vectors,
+    max_steps,
+    check_sign_parallelism,
+):
+    estimate_from_test_vectors = partial(
+        _estimate_1norm_from_test_vectors,
+        step=step,
+        apply_operator_to_test_vectors=apply_operator_to_test_vectors,
+        apply_adjoint_to_sign_vectors=apply_adjoint_to_sign_vectors,
+        max_steps=max_steps,
+        check_sign_parallelism=check_sign_parallelism,
+    )
+    return jax.lax.cond(
+        state.done,
+        _keep_completed_estimate,
+        estimate_from_test_vectors,
+        state,
+    )
+
+
 def _onenormest(block_size, max_steps):
     def estimate_norm(matvec, v_like, key, *parameters):
         flat_like, unravel = _validate_vector_space(v_like)
@@ -141,154 +350,35 @@ def _onenormest(block_size, max_steps):
         def matvec_flat(vector):
             return ravel_pytree(matvec(unravel(vector), *parameters))[0]
 
-        vecmat_flat_adjoint = _linear_adjoint(matvec_flat, flat_like)
-        matmat = jax.vmap(matvec_flat)
-        matmat_adjoint = jax.vmap(lambda v: vecmat_flat_adjoint(v)[0])
-
-        key, block = _initial_block(key, size, block_size, flat_like.dtype)
-        estimate = jnp.zeros((), dtype=real_dtype)
-        previous_signs = jnp.zeros_like(block)
-        indices = jnp.zeros((block_size,), dtype=jnp.int32)
-        visited = jnp.zeros((size,), dtype=bool)
-        done = jnp.array(False)
-
-        def iteration(step, state):
-            done = state[-1]
-
-            def active_iteration(state):
-                (
-                    block,
-                    estimate,
-                    previous_signs,
-                    indices,
-                    visited,
-                    key,
-                    _,
-                ) = state
-                image = matmat(block)
-                vector_norms = jnp.sum(jnp.abs(image), axis=-1)
-                candidate = jnp.max(vector_norms)
-                no_improvement = (step > 0) & (candidate <= estimate)
-
-                def stop_without_adjoint(_):
-                    return (
-                        block,
-                        estimate,
-                        previous_signs,
-                        indices,
-                        visited,
-                        key,
-                        jnp.array(True),
-                    )
-
-                def continue_iteration(_):
-                    next_estimate = jnp.maximum(estimate, candidate)
-
-                    def stop_after_final_forward(_):
-                        return (
-                            block,
-                            next_estimate,
-                            previous_signs,
-                            indices,
-                            visited,
-                            key,
-                            jnp.array(True),
-                        )
-
-                    def process_signs(_):
-                        best_vector = jnp.argmax(vector_norms)
-                        best_index = indices[best_vector]
-                        sign_vectors = _sign_round_up(image)
-                        all_sign_vectors_parallel = (
-                            _all_sign_vectors_parallel_to_previous(
-                                step,
-                                sign_vectors,
-                                previous_signs,
-                                check_parallelism=check_sign_parallelism,
-                            )
-                        )
-
-                        def stop_on_repeated_signs(_):
-                            return (
-                                block,
-                                next_estimate,
-                                previous_signs,
-                                indices,
-                                visited,
-                                key,
-                                jnp.array(True),
-                            )
-
-                        def continue_with_adjoint(_):
-                            next_key, sign_vectors_unique = (
-                                _resample_parallel_sign_vectors(
-                                    key,
-                                    sign_vectors,
-                                    previous_signs,
-                                    check_parallelism=check_sign_parallelism,
-                                )
-                            )
-                            adjoint_image = matmat_adjoint(sign_vectors_unique)
-                            row_norms = jnp.max(jnp.abs(adjoint_image), axis=0)
-                            ranked = jnp.argsort(-row_norms, stable=True)
-                            repeated_best = (step > 0) & jnp.isclose(
-                                jnp.max(row_norms), row_norms[best_index]
-                            )
-                            top_already_visited = jnp.all(visited[ranked[:block_size]])
-                            should_stop = repeated_best | top_already_visited
-
-                            ranked_visited = visited[ranked]
-                            unseen_first = jnp.argsort(ranked_visited, stable=True)
-                            selected = ranked[unseen_first[:block_size]].astype(
-                                indices.dtype
-                            )
-                            next_block = jax.nn.one_hot(
-                                selected, size, dtype=flat_like.dtype
-                            )
-                            next_visited = visited.at[selected].set(True)
-                            return (
-                                next_block,
-                                next_estimate,
-                                sign_vectors_unique,
-                                selected,
-                                next_visited,
-                                next_key,
-                                should_stop,
-                            )
-
-                        return jax.lax.cond(
-                            all_sign_vectors_parallel,
-                            stop_on_repeated_signs,
-                            continue_with_adjoint,
-                            operand=None,
-                        )
-
-                    return jax.lax.cond(
-                        step == max_steps - 1,
-                        stop_after_final_forward,
-                        process_signs,
-                        operand=None,
-                    )
-
-                return jax.lax.cond(
-                    no_improvement,
-                    stop_without_adjoint,
-                    continue_iteration,
-                    operand=None,
-                )
-
-            return jax.lax.cond(done, lambda state: state, active_iteration, state)
-
-        state = (
-            block,
-            estimate,
-            previous_signs,
-            indices,
-            visited,
-            key,
-            done,
+        apply_adjoint_flat = _linear_adjoint(matvec_flat, flat_like)
+        apply_operator_to_test_vectors = jax.vmap(matvec_flat)
+        apply_adjoint_to_sign_vectors = jax.vmap(
+            lambda sign_vector: apply_adjoint_flat(sign_vector)[0]
         )
-        _, estimate, _, _, _, _, _ = jax.lax.fori_loop(0, max_steps, iteration, state)
-        return jax.lax.stop_gradient(jnp.maximum(estimate, 0))
+
+        key, test_vectors = _initial_block(
+            key,
+            size,
+            block_size,
+            flat_like.dtype,
+        )
+        state = _Block1NormEstimatorState(
+            test_vectors=test_vectors,
+            estimate=jnp.zeros((), dtype=real_dtype),
+            previous_sign_vectors=jnp.zeros_like(test_vectors),
+            test_vector_indices=jnp.zeros((block_size,), dtype=jnp.int32),
+            visited_basis_indices=jnp.zeros((size,), dtype=bool),
+            key=key,
+            done=jnp.array(False),
+        )
+        power_iteration_step = partial(
+            _block_1norm_power_iteration_step,
+            apply_operator_to_test_vectors=apply_operator_to_test_vectors,
+            apply_adjoint_to_sign_vectors=apply_adjoint_to_sign_vectors,
+            max_steps=max_steps,
+            check_sign_parallelism=check_sign_parallelism,
+        )
+        state = jax.lax.fori_loop(0, max_steps, power_iteration_step, state)
+        return jax.lax.stop_gradient(jnp.maximum(state.estimate, 0))
 
     return estimate_norm

@@ -186,48 +186,77 @@ def test_onenormest_handles_operator_powers_without_changing_its_cost():
     assert power * cost == 24
 
 
-def test_onenormest_skips_adjoint_on_final_step(monkeypatch):
-    matrix = jnp.array(
-        [
-            [-0.98128909, 0.03826571, -0.9366923, -0.69846063, -0.29595587, 0.31419297],
-            [0.63443117, -1.08491685, 0.25676977, 0.47592282, 0.85303157, -0.16485969],
-            [1.04476288, 1.53548419, 0.44388999, -0.70602427, -1.39838878, 0.33018547],
-            [-1.73440706, 0.72005797, 0.56592782, -0.79026839, -0.11883412, 0.7663085],
-            [
-                -0.48582007,
-                0.56101067,
-                -0.30619089,
-                -0.27750305,
-                -0.56399731,
-                -1.92742072,
-            ],
-            [-1.9018335, 0.86788021, -0.34433705, 1.53220957, -0.63933366, 1.56270841],
-        ]
-    )
+def test_estimate_1norm_from_test_vectors_uses_adjoint_before_final_step():
     adjoint_calls = []
 
-    def record(_):
-        adjoint_calls.append(None)
+    def record(sign_vectors):
+        adjoint_calls.append(np.asarray(sign_vectors))
 
-    original_linear_adjoint = expax.normest._linear_adjoint
+    def apply_adjoint_to_sign_vectors(sign_vectors):
+        jax.debug.callback(record, sign_vectors)
+        return sign_vectors
 
-    def instrumented_adjoint(func, *primals):
-        adjoint = original_linear_adjoint(func, *primals)
-
-        def instrumented(vector):
-            jax.debug.callback(record, vector[0])
-            return adjoint(vector)
-
-        return instrumented
-
-    monkeypatch.setattr(expax.normest, "_linear_adjoint", instrumented_adjoint)
-    estimate, _ = expax.normest.onenormest(block_size=2, max_steps=2)
-    received = jax.jit(lambda key: estimate(_dense_matvec, jnp.zeros(6), key, matrix))(
-        jax.random.key(0)
+    state = expax.normest._Block1NormEstimatorState(
+        test_vectors=jnp.ones((2, 3)),
+        estimate=jnp.array(0.0),
+        previous_sign_vectors=jnp.zeros((2, 3)),
+        test_vector_indices=jnp.zeros((2,), dtype=jnp.int32),
+        visited_basis_indices=jnp.zeros((3,), dtype=bool),
+        key=jax.random.key(0),
+        done=jnp.array(False),
     )
-    jax.block_until_ready(received)
+    estimate_before_final_step = jax.jit(
+        lambda state: expax.normest._estimate_1norm_from_test_vectors(
+            state,
+            step=jnp.array(0),
+            apply_operator_to_test_vectors=lambda test_vectors: test_vectors,
+            apply_adjoint_to_sign_vectors=apply_adjoint_to_sign_vectors,
+            max_steps=2,
+            check_sign_parallelism=True,
+        )
+    )
 
-    assert len(adjoint_calls) == 2
+    received = estimate_before_final_step(state)
+    jax.block_until_ready(received.estimate)
+
+    assert [call.shape for call in adjoint_calls] == [(2, 3)]
+
+
+def test_estimate_1norm_from_test_vectors_skips_adjoint_on_final_step():
+    adjoint_calls = []
+
+    def record(sign_vectors):
+        adjoint_calls.append(np.asarray(sign_vectors))
+
+    def apply_adjoint_to_sign_vectors(sign_vectors):
+        jax.debug.callback(record, sign_vectors)
+        return sign_vectors
+
+    state = expax.normest._Block1NormEstimatorState(
+        test_vectors=jnp.ones((2, 3)),
+        estimate=jnp.array(0.0),
+        previous_sign_vectors=jnp.zeros((2, 3)),
+        test_vector_indices=jnp.zeros((2,), dtype=jnp.int32),
+        visited_basis_indices=jnp.zeros((3,), dtype=bool),
+        key=jax.random.key(0),
+        done=jnp.array(False),
+    )
+    estimate_on_final_step = jax.jit(
+        lambda state: expax.normest._estimate_1norm_from_test_vectors(
+            state,
+            step=jnp.array(1),
+            apply_operator_to_test_vectors=lambda test_vectors: test_vectors,
+            apply_adjoint_to_sign_vectors=apply_adjoint_to_sign_vectors,
+            max_steps=2,
+            check_sign_parallelism=True,
+        )
+    )
+
+    received = estimate_on_final_step(state)
+    jax.block_until_ready(received.estimate)
+
+    assert not adjoint_calls
+    assert bool(received.done)
 
 
 def test_onenormest_does_not_materialize_small_operators():
