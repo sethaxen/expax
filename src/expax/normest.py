@@ -425,9 +425,7 @@ def _onenormest(
     ) -> _RealScalar:
         flat_like, unravel = _validate_vector_space(v_like)
         if flat_like.size <= estimator_cost:
-            return jax.lax.stop_gradient(
-                _exact_1_norm_estimator(matvec, v_like, key, *parameters)
-            )
+            return _exact_1_norm_estimator(matvec, v_like, key, *parameters)
 
         real_dtype = jnp.real(flat_like).dtype
         check_sign_parallelism = not jnp.issubdtype(
@@ -469,6 +467,6 @@ def _onenormest(
             check_sign_parallelism=check_sign_parallelism,
         )
         state = jax.lax.fori_loop(0, max_steps, power_iteration_step, state)
-        return jax.lax.stop_gradient(jnp.maximum(state.estimate, 0))
+        return jnp.maximum(state.estimate, 0)
 
     return estimate_norm

@@ -123,6 +123,33 @@ def test_onenormest_is_exact_for_diagonal_operators_above_its_cost(seed: int) ->
     np.testing.assert_allclose(received, 7.0)
 
 
+def test_onenormest_exact_estimate_is_differentiable() -> None:
+    matrix = jnp.array([[1.0, 2.0], [3.0, -5.0]])
+    estimate, _ = expax.normest.onenormest(block_size=2)
+
+    def objective(matrix):
+        return estimate(_dense_matvec, jnp.zeros(2), jax.random.key(0), matrix)
+
+    received = jax.jit(jax.grad(objective))(matrix)
+    expected = jnp.array([[0.0, 1.0], [0.0, -1.0]])
+
+    np.testing.assert_array_equal(received, expected)
+
+
+def test_onenormest_stochastic_estimate_is_differentiable() -> None:
+    diagonal = jnp.arange(1.0, 10.0)
+    estimate, _ = expax.normest.onenormest(block_size=2)
+
+    def objective(diagonal):
+        matrix = jnp.diag(diagonal)
+        return estimate(_dense_matvec, jnp.zeros(9), jax.random.key(0), matrix)
+
+    received = jax.jit(jax.grad(objective))(diagonal)
+    expected = jax.nn.one_hot(8, 9)
+
+    np.testing.assert_array_equal(received, expected)
+
+
 @pytest.mark.parametrize("seed", range(4))
 def test_onenormest_bounds_complex_nonnormal_operator_above_its_cost(seed: int) -> None:
     matrix = jnp.pad(
