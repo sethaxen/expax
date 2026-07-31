@@ -1,17 +1,23 @@
+from __future__ import annotations
+
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 from jax.flatten_util import ravel_pytree
+from jaxtyping import Array, Inexact, PyTree, Real
 
 import expax
 
 
-def _dense_matvec(x, matrix):
+def _dense_matvec(
+    x: Inexact[Array, "dim"],
+    matrix: Inexact[Array, "dim dim"],
+) -> Inexact[Array, "dim"]:
     return matrix @ x
 
 
-def test_vectors_needing_resampling_prioritizes_earlier_current_vectors():
+def test_vectors_needing_resampling_prioritizes_earlier_current_vectors() -> None:
     block = jnp.array(
         [
             [1.0, 1.0, 1.0, 1.0],
@@ -26,7 +32,7 @@ def test_vectors_needing_resampling_prioritizes_earlier_current_vectors():
     np.testing.assert_array_equal(received, [False, True, True])
 
 
-def test_complex_sign_vectors_never_trigger_parallel_stop():
+def test_complex_sign_vectors_never_trigger_parallel_stop() -> None:
     sign_vectors = jnp.array([[1.0, 1j, -1.0, -1j]], dtype=jnp.complex64)
 
     received = expax.normest._all_sign_vectors_parallel_to_previous(
@@ -39,7 +45,7 @@ def test_complex_sign_vectors_never_trigger_parallel_stop():
     assert not bool(received)
 
 
-def test_complex_sign_vectors_are_not_resampled():
+def test_complex_sign_vectors_are_not_resampled() -> None:
     key = jax.random.key(0)
     sign_vectors = jnp.array([[1.0, 1j, -1.0, -1j]], dtype=jnp.complex64)
 
@@ -57,7 +63,7 @@ def test_complex_sign_vectors_are_not_resampled():
     np.testing.assert_array_equal(received_sign_vectors, sign_vectors)
 
 
-def test_resample_parallel_vectors_uses_one_block_retry_loop():
+def test_resample_parallel_vectors_uses_one_block_retry_loop() -> None:
     block = jnp.ones((2, 3))
     previous = jnp.array([[1.0, -1.0, 1.0], [1.0, 1.0, -1.0]])
 
@@ -68,7 +74,7 @@ def test_resample_parallel_vectors_uses_one_block_retry_loop():
     assert sum(eqn.primitive.name == "while" for eqn in jaxpr.eqns) == 1
 
 
-def test_resample_parallel_vectors_removes_all_conflicts_at_minimum_dimension():
+def test_resample_parallel_vectors_removes_all_conflicts_at_minimum_dimension() -> None:
     previous = jnp.array([[1.0, 1.0, 1.0], [1.0, -1.0, 1.0]])
 
     received = jax.jit(expax.normest._resample_parallel_vectors)(
@@ -79,7 +85,7 @@ def test_resample_parallel_vectors_removes_all_conflicts_at_minimum_dimension():
     assert not bool(jnp.any(needs_resampling))
 
 
-def test_initial_block_is_normalized_and_has_no_parallel_vectors():
+def test_initial_block_is_normalized_and_has_no_parallel_vectors() -> None:
     _, received = jax.jit(expax.normest._initial_block, static_argnums=(1, 2, 3))(
         jax.random.key(0), 4, 3, jnp.float32
     )
@@ -91,7 +97,7 @@ def test_initial_block_is_normalized_and_has_no_parallel_vectors():
     assert not bool(jnp.any(needs_resampling))
 
 
-def test_initial_block_resamples_parallel_real_vectors_stored_as_complex():
+def test_initial_block_resamples_parallel_real_vectors_stored_as_complex() -> None:
     _, received = expax.normest._initial_block(
         jax.random.key(4),
         3,
@@ -103,14 +109,14 @@ def test_initial_block_resamples_parallel_real_vectors_stored_as_complex():
     assert not bool(expax.normest._parallel_vectors(unscaled[:1], unscaled[1:])[0, 0])
 
 
-def test_onenormest_reports_code_fragment_3_1_cost():
+def test_onenormest_reports_code_fragment_3_1_cost() -> None:
     _, cost = expax.normest.onenormest(block_size=3)
 
     assert cost == 12
 
 
 @pytest.mark.parametrize("seed", range(4))
-def test_onenormest_is_exact_for_diagonal_operators_above_its_cost(seed):
+def test_onenormest_is_exact_for_diagonal_operators_above_its_cost(seed: int) -> None:
     matrix = jnp.diag(jnp.array([-2.0, 7.0, 1.0, -4.0, 3.0, -6.0, 5.0, 2.0, -1.0]))
     estimate, _ = expax.normest.onenormest(block_size=2)
 
@@ -120,7 +126,7 @@ def test_onenormest_is_exact_for_diagonal_operators_above_its_cost(seed):
 
 
 @pytest.mark.parametrize("seed", range(4))
-def test_onenormest_bounds_complex_nonnormal_operator_above_its_cost(seed):
+def test_onenormest_bounds_complex_nonnormal_operator_above_its_cost(seed: int) -> None:
     matrix = jnp.pad(
         jnp.array(
             [
@@ -148,7 +154,7 @@ def test_onenormest_bounds_complex_nonnormal_operator_above_its_cost(seed):
     assert exact / 3 <= received <= exact
 
 
-def test_onenormest_accepts_parameterized_pytree_operators_above_its_cost():
+def test_onenormest_accepts_parameterized_pytree_operators_above_its_cost() -> None:
     v_like = {
         "left": jnp.zeros(5, dtype=jnp.float64),
         "right": jnp.zeros(4, dtype=jnp.float64),
@@ -158,7 +164,11 @@ def test_onenormest_accepts_parameterized_pytree_operators_above_its_cost():
         ((0, 6), (0, 6)),
     )
 
-    def matvec(x, scale, matrix):
+    def matvec(
+        x: PyTree[Inexact[Array, "..."]],
+        scale: Real[Array, ""],
+        matrix: Inexact[Array, "dim dim"],
+    ) -> PyTree[Inexact[Array, "..."]]:
         flat, unravel = ravel_pytree(x)
         return unravel(scale * (matrix @ flat))
 
@@ -175,14 +185,19 @@ def test_onenormest_accepts_parameterized_pytree_operators_above_its_cost():
     assert exact / 3 <= float(received) <= exact
 
 
-def test_onenormest_handles_operator_powers_above_its_cost_without_changing_cost():
+def test_onenormest_handles_operator_powers_above_its_cost_without_changing_cost() -> (
+    None
+):
     matrix = jnp.pad(
         jnp.array([[2.0, 1.0, 0.0], [0.0, -1.0, 3.0], [1.0, 0.0, 2.0]]),
         ((0, 6), (0, 6)),
     )
     power = 3
 
-    def powered_matvec(x, matrix):
+    def powered_matvec(
+        x: Inexact[Array, "dim"],
+        matrix: Inexact[Array, "dim dim"],
+    ) -> Inexact[Array, "dim"]:
         for _ in range(power):
             x = matrix @ x
         return x
@@ -195,13 +210,15 @@ def test_onenormest_handles_operator_powers_above_its_cost_without_changing_cost
     assert power * cost == 24
 
 
-def test_estimate_1norm_from_test_vectors_uses_adjoint_before_final_step():
+def test_estimate_1norm_from_test_vectors_uses_adjoint_before_final_step() -> None:
     adjoint_calls = []
 
-    def record(sign_vectors):
+    def record(sign_vectors: Inexact[np.ndarray, "block dim"]) -> None:
         adjoint_calls.append(np.asarray(sign_vectors))
 
-    def apply_adjoint_to_sign_vectors(sign_vectors):
+    def apply_adjoint_to_sign_vectors(
+        sign_vectors: Inexact[Array, "block dim"],
+    ) -> Inexact[Array, "block dim"]:
         jax.debug.callback(record, sign_vectors)
         return sign_vectors
 
@@ -231,13 +248,15 @@ def test_estimate_1norm_from_test_vectors_uses_adjoint_before_final_step():
     assert [call.shape for call in adjoint_calls] == [(2, 3)]
 
 
-def test_estimate_1norm_from_test_vectors_skips_adjoint_on_final_step():
+def test_estimate_1norm_from_test_vectors_skips_adjoint_on_final_step() -> None:
     adjoint_calls = []
 
-    def record(sign_vectors):
+    def record(sign_vectors: Inexact[np.ndarray, "block dim"]) -> None:
         adjoint_calls.append(np.asarray(sign_vectors))
 
-    def apply_adjoint_to_sign_vectors(sign_vectors):
+    def apply_adjoint_to_sign_vectors(
+        sign_vectors: Inexact[Array, "block dim"],
+    ) -> Inexact[Array, "block dim"]:
         jax.debug.callback(record, sign_vectors)
         return sign_vectors
 
@@ -268,7 +287,7 @@ def test_estimate_1norm_from_test_vectors_skips_adjoint_on_final_step():
     assert bool(received.done)
 
 
-def test_onenormest_evaluates_below_cost_operators_exactly_under_jit():
+def test_onenormest_evaluates_below_cost_operators_exactly_under_jit() -> None:
     matrix = jnp.pad(
         jnp.array([[1.0, 4.0, 0.0], [2.0, -5.0, 0.0], [3.0, 2.0, 1.0]]),
         ((0, 4), (0, 4)),
@@ -282,7 +301,7 @@ def test_onenormest_evaluates_below_cost_operators_exactly_under_jit():
     np.testing.assert_allclose(received, 11.0)
 
 
-def test_onenormest_evaluates_exactly_when_block_size_equals_dimension():
+def test_onenormest_evaluates_exactly_when_block_size_equals_dimension() -> None:
     matrix = jnp.array([[1.0, 4.0], [2.0, -5.0]])
     estimate, _ = expax.normest.onenormest(block_size=2)
 
@@ -293,7 +312,7 @@ def test_onenormest_evaluates_exactly_when_block_size_equals_dimension():
     np.testing.assert_allclose(received, 9.0)
 
 
-def test_onenormest_evaluates_cost_sized_operators_exactly_under_jit():
+def test_onenormest_evaluates_cost_sized_operators_exactly_under_jit() -> None:
     matrix = jnp.pad(
         jnp.array([[1.0, 4.0, 0.0], [2.0, -5.0, 0.0], [3.0, 2.0, 1.0]]),
         ((0, 5), (0, 5)),
@@ -307,8 +326,10 @@ def test_onenormest_evaluates_cost_sized_operators_exactly_under_jit():
     np.testing.assert_allclose(received, 11.0)
 
 
-def test_onenormest_exact_dispatch_avoids_constructing_an_adjoint():
-    def forward_only_matvec(vector):
+def test_onenormest_exact_dispatch_avoids_constructing_an_adjoint() -> None:
+    def forward_only_matvec(
+        vector: Inexact[Array, "dim"],
+    ) -> Inexact[Array, "dim"]:
         return jax.pure_callback(
             lambda value: value,
             jax.ShapeDtypeStruct(vector.shape, vector.dtype),
@@ -336,6 +357,8 @@ def test_onenormest_exact_dispatch_avoids_constructing_an_adjoint():
         ({"max_steps": 1}, "max_steps"),
     ],
 )
-def test_onenormest_rejects_invalid_static_configuration(kwargs, message):
+def test_onenormest_rejects_invalid_static_configuration(
+    kwargs: dict[str, int], message: str
+) -> None:
     with pytest.raises(ValueError, match=message):
         expax.normest.onenormest(**kwargs)

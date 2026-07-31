@@ -10,6 +10,8 @@ extensions = [
     "sphinx.ext.autodoc",
     "sphinx.ext.napoleon",
 ]
+autodoc_typehints = "signature"
+autodoc_typehints_format = "short"
 
 html_theme = "furo"
 exclude_patterns = ["_build", "superpowers"]

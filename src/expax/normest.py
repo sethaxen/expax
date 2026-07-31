@@ -1,16 +1,22 @@
 """Composable estimators for operator norms."""
 
+from __future__ import annotations
+
+from collections.abc import Callable
 from functools import partial
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 import jax
 import jax.numpy as jnp
 from jax.flatten_util import ravel_pytree
+from jaxtyping import Array, Bool, DTypeLike, Inexact, Int, PRNGKeyArray, PyTree, Real
 
 from expax._operator import _linear_adjoint, _validate_vector_space
 
 
-def onenormest(*, block_size=2, max_steps=5):
+def onenormest(
+    *, block_size: int = 2, max_steps: int = 5
+) -> tuple[Callable[..., Real[Array, ""]], int]:
     """Construct a block 1-norm estimator and its scalar-matvec cost model.
 
     The estimator implements Higham--Tisseur Algorithm 2.4. Each batch applies
@@ -33,20 +39,31 @@ def onenormest(*, block_size=2, max_steps=5):
     return _onenormest(block_size, max_steps, estimator_cost), estimator_cost
 
 
-def _sign_round_up(values):
+def _sign_round_up(
+    values: Inexact[Array, "block dim"],
+) -> Inexact[Array, "block dim"]:
     magnitudes = jnp.abs(values)
     return jnp.where(magnitudes == 0, 1.0, values / magnitudes)
 
 
-def _parallel_vectors(left, right):
+def _parallel_vectors(
+    left: Inexact[Array, "left dim"],
+    right: Inexact[Array, "right dim"],
+) -> Bool[Array, "left right"]:
     return jnp.isclose(jnp.abs(jnp.inner(left, right)), left.shape[-1])
 
 
-def _all_vectors_parallel(left, right):
+def _all_vectors_parallel(
+    left: Inexact[Array, "left dim"],
+    right: Inexact[Array, "right dim"],
+) -> Bool[Array, ""]:
     return jnp.all(jnp.any(_parallel_vectors(left, right), axis=-1))
 
 
-def _vectors_needing_resampling(block, previous):
+def _vectors_needing_resampling(
+    block: Inexact[Array, "block dim"],
+    previous: Inexact[Array, "prev dim"],
+) -> Bool[Array, "block"]:
     block_size = block.shape[0]
     vector = jnp.arange(block_size)
     earlier = vector < vector[:, None]
@@ -61,13 +78,22 @@ def _vectors_needing_resampling(block, previous):
     return jnp.any(_parallel_vectors(block, others) & comparisons, axis=-1)
 
 
-def _sample_real_signs(key, size, dtype):
+def _sample_real_signs(
+    key: PRNGKeyArray,
+    size: tuple[int, ...],
+    dtype: DTypeLike,
+) -> Inexact[Array, "*shape"]:
     rdtype = jnp.dtype(dtype).type(0).real.dtype
     sample = jax.random.rademacher(key, size, dtype=rdtype)
     return sample.astype(dtype)
 
 
-def _initial_block(key, size, block_size, dtype):
+def _initial_block(
+    key: PRNGKeyArray,
+    size: int,
+    block_size: int,
+    dtype: DTypeLike,
+) -> tuple[PRNGKeyArray, Inexact[Array, "block dim"]]:
     key, sample_key, resample_key = jax.random.split(key, 3)
     samples = _sample_real_signs(sample_key, (block_size - 1, size), dtype=dtype)
     block = jnp.concatenate((jnp.ones((1, size), dtype=dtype), samples), axis=0)
@@ -76,7 +102,11 @@ def _initial_block(key, size, block_size, dtype):
     return key, block / size
 
 
-def _resample_parallel_vectors(key, block, previous):
+def _resample_parallel_vectors(
+    key: PRNGKeyArray,
+    block: Inexact[Array, "block dim"],
+    previous: Inexact[Array, "prev dim"],
+) -> Inexact[Array, "block dim"]:
     needs_resampling = _vectors_needing_resampling(block, previous)
 
     def cond_fun(state):
@@ -99,12 +129,12 @@ def _resample_parallel_vectors(key, block, previous):
 
 
 def _all_sign_vectors_parallel_to_previous(
-    step,
-    sign_vectors,
-    previous_sign_vectors,
+    step: int | Int[Array, ""],
+    sign_vectors: Inexact[Array, "block dim"],
+    previous_sign_vectors: Inexact[Array, "block dim"],
     *,
-    check_parallelism,
-):
+    check_parallelism: bool,
+) -> Bool[Array, ""]:
     if not check_parallelism:
         return jnp.array(False)
     return (step > 0) & _all_vectors_parallel(
@@ -114,12 +144,12 @@ def _all_sign_vectors_parallel_to_previous(
 
 
 def _resample_parallel_sign_vectors(
-    key,
-    sign_vectors,
-    previous_sign_vectors,
+    key: PRNGKeyArray,
+    sign_vectors: Inexact[Array, "block dim"],
+    previous_sign_vectors: Inexact[Array, "block dim"],
     *,
-    check_parallelism,
-):
+    check_parallelism: bool,
+) -> tuple[PRNGKeyArray, Inexact[Array, "block dim"]]:
     if not check_parallelism:
         return key, sign_vectors
     next_key, resample_key = jax.random.split(key)
@@ -132,51 +162,59 @@ def _resample_parallel_sign_vectors(
 
 
 class _Block1NormEstimatorState(NamedTuple):
-    test_vectors: jax.Array
-    estimate: jax.Array
-    previous_sign_vectors: jax.Array
-    test_vector_indices: jax.Array
-    visited_basis_indices: jax.Array
-    key: jax.Array
-    done: jax.Array
+    test_vectors: Inexact[Array, "block dim"]
+    estimate: Real[Array, ""]
+    previous_sign_vectors: Inexact[Array, "block dim"]
+    test_vector_indices: Int[Array, "block"]
+    visited_basis_indices: Bool[Array, "dim"]
+    key: PRNGKeyArray
+    done: Bool[Array, ""]
 
 
 class _ForwardNormEstimate(NamedTuple):
-    step: jax.Array
+    step: int | Int[Array, ""]
     state: _Block1NormEstimatorState
-    test_vector_products: jax.Array
-    product_1norms: jax.Array
+    test_vector_products: Inexact[Array, "block dim"]
+    product_1norms: Real[Array, "block"]
 
 
 class _SignVectorIteration(NamedTuple):
-    step: jax.Array
+    step: int | Int[Array, ""]
     state: _Block1NormEstimatorState
-    sign_vectors: jax.Array
-    best_basis_index: jax.Array
+    sign_vectors: Inexact[Array, "block dim"]
+    best_basis_index: Int[Array, ""]
 
 
-def _finish_norm_estimation(state):
+def _finish_norm_estimation(
+    state: _Block1NormEstimatorState,
+) -> _Block1NormEstimatorState:
     return state._replace(done=jnp.array(True))
 
 
-def _keep_completed_estimate(state):
+def _keep_completed_estimate(
+    state: _Block1NormEstimatorState,
+) -> _Block1NormEstimatorState:
     return state
 
 
-def _finish_after_forward_estimate(forward_estimate):
+def _finish_after_forward_estimate(
+    forward_estimate: _ForwardNormEstimate,
+) -> _Block1NormEstimatorState:
     return _finish_norm_estimation(forward_estimate.state)
 
 
-def _finish_on_parallel_sign_vectors(sign_iteration):
+def _finish_on_parallel_sign_vectors(
+    sign_iteration: _SignVectorIteration,
+) -> _Block1NormEstimatorState:
     return _finish_norm_estimation(sign_iteration.state)
 
 
 def _select_unvisited_basis_indices(
-    basis_scores,
-    visited_basis_indices,
-    num_test_vectors,
-    index_dtype,
-):
+    basis_scores: Real[Array, "dim"],
+    visited_basis_indices: Bool[Array, "dim"],
+    num_test_vectors: int,
+    index_dtype: DTypeLike,
+) -> tuple[Int[Array, "block"], Bool[Array, ""]]:
     ranked = jnp.argsort(-basis_scores, stable=True)
     top_basis_indices_visited = jnp.all(
         visited_basis_indices[ranked[:num_test_vectors]]
@@ -190,23 +228,33 @@ def _select_unvisited_basis_indices(
 
 
 def _score_basis_vectors_with_adjoint(
-    sign_vectors,
-    apply_adjoint_to_sign_vectors,
-):
+    sign_vectors: Inexact[Array, "block dim"],
+    apply_adjoint_to_sign_vectors: Callable[
+        [Inexact[Array, "block dim"]],
+        Inexact[Array, "block dim"],
+    ],
+) -> Real[Array, "dim"]:
     adjoint_products = apply_adjoint_to_sign_vectors(sign_vectors)
     return jnp.max(jnp.abs(adjoint_products), axis=0)
 
 
-def _build_basis_test_vectors(basis_indices, size, dtype):
+def _build_basis_test_vectors(
+    basis_indices: Int[Array, "block"],
+    size: int,
+    dtype: DTypeLike,
+) -> Inexact[Array, "block dim"]:
     return jax.nn.one_hot(basis_indices, size, dtype=dtype)
 
 
 def _choose_test_vectors_from_adjoint(
-    sign_iteration,
+    sign_iteration: _SignVectorIteration,
     *,
-    apply_adjoint_to_sign_vectors,
-    check_sign_parallelism,
-):
+    apply_adjoint_to_sign_vectors: Callable[
+        [Inexact[Array, "block dim"]],
+        Inexact[Array, "block dim"],
+    ],
+    check_sign_parallelism: bool,
+) -> _Block1NormEstimatorState:
     state = sign_iteration.state
     next_key, sign_vectors = _resample_parallel_sign_vectors(
         state.key,
@@ -247,11 +295,14 @@ def _choose_test_vectors_from_adjoint(
 
 
 def _choose_next_test_vectors(
-    forward_estimate,
+    forward_estimate: _ForwardNormEstimate,
     *,
-    apply_adjoint_to_sign_vectors,
-    check_sign_parallelism,
-):
+    apply_adjoint_to_sign_vectors: Callable[
+        [Inexact[Array, "block dim"]],
+        Inexact[Array, "block dim"],
+    ],
+    check_sign_parallelism: bool,
+) -> _Block1NormEstimatorState:
     sign_vectors = _sign_round_up(forward_estimate.test_vector_products)
     best_test_vector = jnp.argmax(forward_estimate.product_1norms)
     sign_iteration = _SignVectorIteration(
@@ -280,14 +331,20 @@ def _choose_next_test_vectors(
 
 
 def _estimate_1norm_from_test_vectors(
-    state,
+    state: _Block1NormEstimatorState,
     *,
-    step,
-    apply_operator_to_test_vectors,
-    apply_adjoint_to_sign_vectors,
-    max_steps,
-    check_sign_parallelism,
-):
+    step: int | Int[Array, ""],
+    apply_operator_to_test_vectors: Callable[
+        [Inexact[Array, "block dim"]],
+        Inexact[Array, "block dim"],
+    ],
+    apply_adjoint_to_sign_vectors: Callable[
+        [Inexact[Array, "block dim"]],
+        Inexact[Array, "block dim"],
+    ],
+    max_steps: int,
+    check_sign_parallelism: bool,
+) -> _Block1NormEstimatorState:
     test_vector_products = apply_operator_to_test_vectors(state.test_vectors)
     product_1norms = jnp.sum(jnp.abs(test_vector_products), axis=-1)
     candidate_estimate = jnp.max(product_1norms)
@@ -313,14 +370,20 @@ def _estimate_1norm_from_test_vectors(
 
 
 def _block_1norm_power_iteration_step(
-    step,
-    state,
+    step: int | Int[Array, ""],
+    state: _Block1NormEstimatorState,
     *,
-    apply_operator_to_test_vectors,
-    apply_adjoint_to_sign_vectors,
-    max_steps,
-    check_sign_parallelism,
-):
+    apply_operator_to_test_vectors: Callable[
+        [Inexact[Array, "block dim"]],
+        Inexact[Array, "block dim"],
+    ],
+    apply_adjoint_to_sign_vectors: Callable[
+        [Inexact[Array, "block dim"]],
+        Inexact[Array, "block dim"],
+    ],
+    max_steps: int,
+    check_sign_parallelism: bool,
+) -> _Block1NormEstimatorState:
     estimate_from_test_vectors = partial(
         _estimate_1norm_from_test_vectors,
         step=step,
@@ -337,18 +400,29 @@ def _block_1norm_power_iteration_step(
     )
 
 
-def _operator_products_on_basis_vectors(matvec, v_like, *parameters):
+def _operator_products_on_basis_vectors(
+    matvec: Callable[..., PyTree[Inexact[Array, "..."]]],
+    v_like: PyTree[Inexact[Array, "..."]],
+    *parameters: Any,
+) -> Inexact[Array, "dim dim"]:
     flat_like, unravel = _validate_vector_space(v_like)
     basis_vectors = jnp.eye(flat_like.size, dtype=flat_like.dtype)
 
-    def apply_operator(vector):
+    def apply_operator(
+        vector: Inexact[Array, "dim"],
+    ) -> Inexact[Array, "dim"]:
         product, _ = ravel_pytree(matvec(unravel(vector), *parameters))
         return product
 
     return jax.vmap(apply_operator)(basis_vectors)
 
 
-def _exact_1_norm_estimator(matvec, v_like, key, *parameters):
+def _exact_1_norm_estimator(
+    matvec: Callable[..., PyTree[Inexact[Array, "..."]]],
+    v_like: PyTree[Inexact[Array, "..."]],
+    key: PRNGKeyArray,
+    *parameters: Any,
+) -> Real[Array, ""]:
     del key
     basis_vector_products = _operator_products_on_basis_vectors(
         matvec, v_like, *parameters
@@ -356,8 +430,17 @@ def _exact_1_norm_estimator(matvec, v_like, key, *parameters):
     return jnp.max(jnp.sum(jnp.abs(basis_vector_products), axis=-1))
 
 
-def _onenormest(block_size, max_steps, estimator_cost):
-    def estimate_norm(matvec, v_like, key, *parameters):
+def _onenormest(
+    block_size: int,
+    max_steps: int,
+    estimator_cost: int,
+) -> Callable[..., Real[Array, ""]]:
+    def estimate_norm(
+        matvec: Callable[..., PyTree[Inexact[Array, "..."]]],
+        v_like: PyTree[Inexact[Array, "..."]],
+        key: PRNGKeyArray,
+        *parameters: Any,
+    ) -> Real[Array, ""]:
         flat_like, unravel = _validate_vector_space(v_like)
         if flat_like.size <= estimator_cost:
             return jax.lax.stop_gradient(
@@ -370,7 +453,9 @@ def _onenormest(block_size, max_steps, estimator_cost):
         )
         size = flat_like.size
 
-        def matvec_flat(vector):
+        def matvec_flat(
+            vector: Inexact[Array, "dim"],
+        ) -> Inexact[Array, "dim"]:
             return ravel_pytree(matvec(unravel(vector), *parameters))[0]
 
         apply_adjoint_flat = _linear_adjoint(matvec_flat, flat_like)
