@@ -27,9 +27,8 @@ def onenormest(
     together to improve reliability.
 
     ```{note}
-    If the average cost of the estimator would exceed the cost of materializing
-    the operator and computing its exact 1-norm, the exact 1-norm is computed
-    instead.
+    If the vector-space dimension does not exceed `4 * block_size`, the estimator
+    materializes the operator and returns its exact 1-norm instead.
     ```
 
     **Parameters**
