@@ -271,7 +271,7 @@ def test_onenormest_bounds_complex_nonnormal_operator_above_its_cost(seed: int) 
         ),
         ((0, 5), (0, 5)),
     )
-    exact = np.linalg.norm(np.asarray(matrix), ord=1)
+    exact = np.linalg.matrix_norm(np.asarray(matrix), ord=1)
     estimate, _ = expax.normest.onenormest(block_size=2)
 
     received = float(
@@ -313,7 +313,7 @@ def test_onenormest_accepts_parameterized_pytree_operators_above_its_cost() -> N
         jax.random.key(12),
     )
 
-    exact = 2.0 * np.linalg.norm(np.asarray(matrix), ord=1)
+    exact = 2.0 * np.linalg.matrix_norm(np.asarray(matrix), ord=1)
     assert exact / 3 <= float(received) <= exact
 
 
@@ -337,7 +337,9 @@ def test_onenormest_handles_operator_powers_above_its_cost_without_changing_cost
     estimate, cost = expax.normest.onenormest(block_size=2)
     received = estimate(powered_matvec, jnp.zeros(9), jax.random.key(5), matrix)
 
-    exact = np.linalg.norm(np.linalg.matrix_power(np.asarray(matrix), power), ord=1)
+    exact = np.linalg.matrix_norm(
+        np.linalg.matrix_power(np.asarray(matrix), power), ord=1
+    )
     assert exact / 3 <= float(received) <= exact
     assert power * cost == 24
 

@@ -367,7 +367,7 @@ def _estimate_onenorm_from_test_vectors(
 ) -> _Block1NormEstimatorState:
     """Apply the operator, update the estimate, then stop or choose test vectors."""
     result_vectors = matvec_batch(state.test_vectors)
-    result_onenorms = jnp.linalg.norm(result_vectors, ord=1, axis=-1)
+    result_onenorms = jnp.linalg.vector_norm(result_vectors, ord=1, axis=-1)
     estimate = jnp.max(result_onenorms)
     no_improvement = (step > 0) & (estimate <= state.estimate)
     forward_estimate = _ForwardNormEstimate(
@@ -427,7 +427,7 @@ def _onenorm_exact(
 ) -> _RealScalar:
     """Compute the exact operator 1-norm by materializing the operator."""
     mat = _materialize_operator(matvec_batch, v)
-    return jnp.linalg.norm(mat, ord=1)
+    return jnp.linalg.matrix_norm(mat, ord=1)
 
 
 def _onenormest(
