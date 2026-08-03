@@ -142,14 +142,14 @@ class _Block1NormEstimatorState(NamedTuple):
 
 
 class _ForwardNormEstimate(NamedTuple):
-    step: int | Int[Array, ""]
+    step: Int[Array, ""]
     state: _Block1NormEstimatorState
     response_vectors: _VectorBatch
     response_onenorms: Real[Array, " block"]
 
 
 class _SignVectorIteration(NamedTuple):
-    step: int | Int[Array, ""]
+    step: Int[Array, ""]
     state: _Block1NormEstimatorState
     sign_vectors: _VectorBatch
     best_basis_index: Int[Array, ""]
@@ -308,7 +308,7 @@ def _choose_next_test_vectors(
 def _estimate_onenorm_from_test_vectors(
     state: _Block1NormEstimatorState,
     *,
-    step: int | Int[Array, ""],
+    step: Int[Array, ""],
     matvec_batch: _BatchedMatvec,
     matvec_batch_adjoint: _BatchedMatvec,
     max_steps: int,
@@ -337,7 +337,7 @@ def _estimate_onenorm_from_test_vectors(
 
 
 def _block_onenorm_power_iteration_step(
-    step: int | Int[Array, ""],
+    step: Int[Array, ""],
     state: _Block1NormEstimatorState,
     *,
     matvec_batch: _BatchedMatvec,
