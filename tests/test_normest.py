@@ -15,7 +15,7 @@ def _dense_matvec(
     return matrix @ x
 
 
-def test_vectors_needing_resampling_prioritizes_earlier_current_vectors() -> None:
+def test_sign_vectors_to_resample_prioritizes_earlier_current_vectors() -> None:
     block = jnp.array(
         [
             [1.0, 1.0, 1.0, 1.0],
@@ -25,14 +25,14 @@ def test_vectors_needing_resampling_prioritizes_earlier_current_vectors() -> Non
     )
     previous = block[2:]
 
-    received = jax.jit(expax.normest._vectors_needing_resampling)(block, previous)
+    received = jax.jit(expax.normest._sign_vectors_to_resample)(block, previous)
 
     np.testing.assert_array_equal(received, [False, True, True])
 
 
-def test_complex_sign_vectors_go_directly_to_adjoint() -> None:
+def test_complex_result_probes_go_directly_to_adjoint() -> None:
     adjoint_calls = []
-    sign_vectors = jnp.array([[1.0, 1j, -1.0, -1j]], dtype=jnp.complex64)
+    result_vectors = jnp.array([[1.0, 1j, -1.0, -1j]], dtype=jnp.complex64)
     key = jax.random.key(0)
 
     def record(vectors: Inexact[np.ndarray, "block dim"]) -> None:
@@ -45,9 +45,9 @@ def test_complex_sign_vectors_go_directly_to_adjoint() -> None:
         return vectors
 
     state = expax.normest._Block1NormEstimatorState(
-        test_vectors=jnp.ones_like(sign_vectors),
+        test_vectors=jnp.ones_like(result_vectors),
         estimate=jnp.array(0.0),
-        previous_sign_vectors=sign_vectors,
+        previous_result_probes=result_vectors,
         test_vector_indices=jnp.zeros((1,), dtype=jnp.int32),
         visited_basis_indices=jnp.zeros((4,), dtype=bool),
         key=key,
@@ -56,8 +56,8 @@ def test_complex_sign_vectors_go_directly_to_adjoint() -> None:
     forward_estimate = expax.normest._ForwardNormEstimate(
         step=jnp.array(1),
         state=state,
-        response_vectors=sign_vectors,
-        response_onenorms=jnp.array([4.0]),
+        result_vectors=result_vectors,
+        result_onenorms=jnp.array([4.0]),
     )
     received = jax.jit(
         lambda estimate: expax.normest._choose_next_test_vectors(
@@ -68,17 +68,17 @@ def test_complex_sign_vectors_go_directly_to_adjoint() -> None:
     jax.block_until_ready(received.estimate)
 
     assert len(adjoint_calls) == 1
-    np.testing.assert_array_equal(adjoint_calls[0], sign_vectors)
+    np.testing.assert_array_equal(adjoint_calls[0], result_vectors)
     np.testing.assert_array_equal(
         jax.random.key_data(received.key),
         jax.random.key_data(key),
     )
 
 
-def test_all_parallel_real_sign_vectors_do_not_resample() -> None:
+def test_all_parallel_real_result_probes_do_not_resample() -> None:
     adjoint_calls = []
     key = jax.random.key(0)
-    sign_vectors = jnp.array([[1.0, 1.0, 1.0, 1.0], [1.0, -1.0, 1.0, -1.0]])
+    result_vectors = jnp.array([[1.0, 1.0, 1.0, 1.0], [1.0, -1.0, 1.0, -1.0]])
 
     def record(vectors: Inexact[np.ndarray, "block dim"]) -> None:
         adjoint_calls.append(np.asarray(vectors))
@@ -90,9 +90,9 @@ def test_all_parallel_real_sign_vectors_do_not_resample() -> None:
         return vectors
 
     state = expax.normest._Block1NormEstimatorState(
-        test_vectors=jnp.ones_like(sign_vectors),
+        test_vectors=jnp.ones_like(result_vectors),
         estimate=jnp.array(0.0),
-        previous_sign_vectors=sign_vectors,
+        previous_result_probes=result_vectors,
         test_vector_indices=jnp.zeros((2,), dtype=jnp.int32),
         visited_basis_indices=jnp.zeros((4,), dtype=bool),
         key=key,
@@ -101,8 +101,8 @@ def test_all_parallel_real_sign_vectors_do_not_resample() -> None:
     forward_estimate = expax.normest._ForwardNormEstimate(
         step=jnp.array(1),
         state=state,
-        response_vectors=sign_vectors,
-        response_onenorms=jnp.ones((2,)),
+        result_vectors=result_vectors,
+        result_onenorms=jnp.ones((2,)),
     )
 
     def choose_next_test_vectors(estimate):
@@ -124,14 +124,14 @@ def test_all_parallel_real_sign_vectors_do_not_resample() -> None:
     )
 
 
-def test_continuing_real_iteration_uses_resampled_sign_vectors() -> None:
+def test_continuing_real_iteration_uses_resampled_result_probes() -> None:
     key = jax.random.key(0)
-    sign_vectors = jnp.array([[1.0, 1.0, 1.0, 1.0], [1.0, -1.0, 1.0, -1.0]])
-    previous_sign_vectors = jnp.array([[1.0, 1.0, 1.0, 1.0], [1.0, 1.0, -1.0, -1.0]])
+    result_vectors = jnp.array([[1.0, 1.0, 1.0, 1.0], [1.0, -1.0, 1.0, -1.0]])
+    previous_result_probes = jnp.array([[1.0, 1.0, 1.0, 1.0], [1.0, 1.0, -1.0, -1.0]])
     state = expax.normest._Block1NormEstimatorState(
-        test_vectors=jnp.ones_like(sign_vectors),
+        test_vectors=jnp.ones_like(result_vectors),
         estimate=jnp.array(0.0),
-        previous_sign_vectors=previous_sign_vectors,
+        previous_result_probes=previous_result_probes,
         test_vector_indices=jnp.zeros((2,), dtype=jnp.int32),
         visited_basis_indices=jnp.zeros((4,), dtype=bool),
         key=key,
@@ -140,8 +140,8 @@ def test_continuing_real_iteration_uses_resampled_sign_vectors() -> None:
     forward_estimate = expax.normest._ForwardNormEstimate(
         step=jnp.array(1),
         state=state,
-        response_vectors=sign_vectors,
-        response_onenorms=jnp.ones((2,)),
+        result_vectors=result_vectors,
+        result_onenorms=jnp.ones((2,)),
     )
 
     received = jax.jit(
@@ -151,9 +151,9 @@ def test_continuing_real_iteration_uses_resampled_sign_vectors() -> None:
         )
     )(forward_estimate)
 
-    needs_resampling = expax.normest._vectors_needing_resampling(
-        received.previous_sign_vectors,
-        previous_sign_vectors,
+    needs_resampling = expax.normest._sign_vectors_to_resample(
+        received.previous_result_probes,
+        previous_result_probes,
     )
     assert not bool(jnp.any(needs_resampling))
     assert not bool(
@@ -164,29 +164,31 @@ def test_continuing_real_iteration_uses_resampled_sign_vectors() -> None:
     )
 
 
-def test_resample_parallel_vectors_uses_one_block_retry_loop() -> None:
+def test_resample_parallel_sign_vectors_uses_one_block_retry_loop() -> None:
     block = jnp.ones((2, 3))
     previous = jnp.array([[1.0, -1.0, 1.0], [1.0, 1.0, -1.0]])
 
-    jaxpr = jax.make_jaxpr(expax.normest._resample_parallel_vectors)(
+    jaxpr = jax.make_jaxpr(expax.normest._resample_parallel_sign_vectors)(
         jax.random.key(0), block, previous
     ).jaxpr
 
     assert sum(eqn.primitive.name == "while" for eqn in jaxpr.eqns) == 1
 
 
-def test_resample_parallel_vectors_removes_all_conflicts_at_minimum_dimension() -> None:
+def test_resample_parallel_sign_vectors_removes_all_conflicts_at_min_dimension() -> (
+    None
+):
     previous = jnp.array([[1.0, 1.0, 1.0], [1.0, -1.0, 1.0]])
 
-    received = jax.jit(expax.normest._resample_parallel_vectors)(
+    received = jax.jit(expax.normest._resample_parallel_sign_vectors)(
         jax.random.key(0), previous, previous
     )
 
-    needs_resampling = expax.normest._vectors_needing_resampling(received, previous)
+    needs_resampling = expax.normest._sign_vectors_to_resample(received, previous)
     assert not bool(jnp.any(needs_resampling))
 
 
-def test_initial_block_is_normalized_and_has_no_parallel_vectors() -> None:
+def test_initial_block_is_normalized_and_has_no_parallel_sign_vectors() -> None:
     received = jax.jit(expax.normest._initial_block, static_argnums=(1, 2, 3))(
         jax.random.key(0), 4, 3, jnp.float32
     )
@@ -194,7 +196,7 @@ def test_initial_block_is_normalized_and_has_no_parallel_vectors() -> None:
     np.testing.assert_array_equal(received[0], jnp.full(4, 0.25))
     unscaled = received * received.shape[-1]
     previous = jnp.empty((0, received.shape[-1]), dtype=received.dtype)
-    needs_resampling = expax.normest._vectors_needing_resampling(unscaled, previous)
+    needs_resampling = expax.normest._sign_vectors_to_resample(unscaled, previous)
     assert not bool(jnp.any(needs_resampling))
 
 
@@ -207,7 +209,9 @@ def test_initial_block_resamples_parallel_real_vectors_stored_as_complex() -> No
     )
 
     unscaled = received * received.shape[-1]
-    assert not bool(expax.normest._parallel_vectors(unscaled[:1], unscaled[1:])[0, 0])
+    assert not bool(
+        expax.normest._parallel_sign_vectors(unscaled[:1], unscaled[1:])[0, 0]
+    )
 
 
 def test_onenormest_reports_code_fragment_3_1_cost() -> None:
@@ -341,19 +345,19 @@ def test_onenormest_handles_operator_powers_above_its_cost_without_changing_cost
 def test_estimate_onenorm_from_test_vectors_uses_adjoint_before_final_step() -> None:
     adjoint_calls = []
 
-    def record(sign_vectors: Inexact[np.ndarray, "block dim"]) -> None:
-        adjoint_calls.append(np.asarray(sign_vectors))
+    def record(result_probes: Inexact[np.ndarray, "block dim"]) -> None:
+        adjoint_calls.append(np.asarray(result_probes))
 
     def matvec_batch_adjoint(
-        sign_vectors: Inexact[Array, "block dim"],
+        result_probes: Inexact[Array, "block dim"],
     ) -> Inexact[Array, "block dim"]:
-        jax.debug.callback(record, sign_vectors)
-        return sign_vectors
+        jax.debug.callback(record, result_probes)
+        return result_probes
 
     state = expax.normest._Block1NormEstimatorState(
         test_vectors=jnp.ones((2, 3)),
         estimate=jnp.array(0.0),
-        previous_sign_vectors=jnp.zeros((2, 3)),
+        previous_result_probes=jnp.zeros((2, 3)),
         test_vector_indices=jnp.zeros((2,), dtype=jnp.int32),
         visited_basis_indices=jnp.zeros((3,), dtype=bool),
         key=jax.random.key(0),
@@ -378,19 +382,19 @@ def test_estimate_onenorm_from_test_vectors_uses_adjoint_before_final_step() -> 
 def test_estimate_onenorm_from_test_vectors_skips_adjoint_on_final_step() -> None:
     adjoint_calls = []
 
-    def record(sign_vectors: Inexact[np.ndarray, "block dim"]) -> None:
-        adjoint_calls.append(np.asarray(sign_vectors))
+    def record(result_probes: Inexact[np.ndarray, "block dim"]) -> None:
+        adjoint_calls.append(np.asarray(result_probes))
 
     def matvec_batch_adjoint(
-        sign_vectors: Inexact[Array, "block dim"],
+        result_probes: Inexact[Array, "block dim"],
     ) -> Inexact[Array, "block dim"]:
-        jax.debug.callback(record, sign_vectors)
-        return sign_vectors
+        jax.debug.callback(record, result_probes)
+        return result_probes
 
     state = expax.normest._Block1NormEstimatorState(
         test_vectors=jnp.ones((2, 3)),
         estimate=jnp.array(0.0),
-        previous_sign_vectors=jnp.zeros((2, 3)),
+        previous_result_probes=jnp.zeros((2, 3)),
         test_vector_indices=jnp.zeros((2,), dtype=jnp.int32),
         visited_basis_indices=jnp.zeros((3,), dtype=bool),
         key=jax.random.key(0),
