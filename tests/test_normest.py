@@ -37,7 +37,7 @@ def test_complex_sign_vectors_never_trigger_parallel_stop() -> None:
         1,
         sign_vectors,
         sign_vectors,
-        check_parallelism=False,
+        check_parallel=False,
     )
 
     assert not bool(received)
@@ -51,7 +51,7 @@ def test_complex_sign_vectors_are_not_resampled() -> None:
         key,
         sign_vectors,
         sign_vectors,
-        check_parallelism=False,
+        check_parallel=False,
     )
 
     np.testing.assert_array_equal(
@@ -84,7 +84,7 @@ def test_resample_parallel_vectors_removes_all_conflicts_at_minimum_dimension() 
 
 
 def test_initial_block_is_normalized_and_has_no_parallel_vectors() -> None:
-    _, received = jax.jit(expax.normest._initial_block, static_argnums=(1, 2, 3))(
+    received = jax.jit(expax.normest._initial_block, static_argnums=(1, 2, 3))(
         jax.random.key(0), 4, 3, jnp.float32
     )
 
@@ -96,7 +96,7 @@ def test_initial_block_is_normalized_and_has_no_parallel_vectors() -> None:
 
 
 def test_initial_block_resamples_parallel_real_vectors_stored_as_complex() -> None:
-    _, received = expax.normest._initial_block(
+    received = expax.normest._initial_block(
         jax.random.key(4),
         3,
         2,
@@ -235,13 +235,13 @@ def test_onenormest_handles_operator_powers_above_its_cost_without_changing_cost
     assert power * cost == 24
 
 
-def test_estimate_1norm_from_test_vectors_uses_adjoint_before_final_step() -> None:
+def test_estimate_onenorm_from_test_vectors_uses_adjoint_before_final_step() -> None:
     adjoint_calls = []
 
     def record(sign_vectors: Inexact[np.ndarray, "block dim"]) -> None:
         adjoint_calls.append(np.asarray(sign_vectors))
 
-    def apply_adjoint_to_sign_vectors(
+    def matvec_batch_adjoint(
         sign_vectors: Inexact[Array, "block dim"],
     ) -> Inexact[Array, "block dim"]:
         jax.debug.callback(record, sign_vectors)
@@ -257,11 +257,11 @@ def test_estimate_1norm_from_test_vectors_uses_adjoint_before_final_step() -> No
         done=jnp.array(False),
     )
     estimate_before_final_step = jax.jit(
-        lambda state: expax.normest._estimate_1norm_from_test_vectors(
+        lambda state: expax.normest._estimate_onenorm_from_test_vectors(
             state,
             step=jnp.array(0),
-            apply_operator_to_test_vectors=lambda test_vectors: test_vectors,
-            apply_adjoint_to_sign_vectors=apply_adjoint_to_sign_vectors,
+            matvec_batch=lambda test_vectors: test_vectors,
+            matvec_batch_adjoint=matvec_batch_adjoint,
             max_steps=2,
             check_sign_parallelism=True,
         )
@@ -273,13 +273,13 @@ def test_estimate_1norm_from_test_vectors_uses_adjoint_before_final_step() -> No
     assert [call.shape for call in adjoint_calls] == [(2, 3)]
 
 
-def test_estimate_1norm_from_test_vectors_skips_adjoint_on_final_step() -> None:
+def test_estimate_onenorm_from_test_vectors_skips_adjoint_on_final_step() -> None:
     adjoint_calls = []
 
     def record(sign_vectors: Inexact[np.ndarray, "block dim"]) -> None:
         adjoint_calls.append(np.asarray(sign_vectors))
 
-    def apply_adjoint_to_sign_vectors(
+    def matvec_batch_adjoint(
         sign_vectors: Inexact[Array, "block dim"],
     ) -> Inexact[Array, "block dim"]:
         jax.debug.callback(record, sign_vectors)
@@ -295,11 +295,11 @@ def test_estimate_1norm_from_test_vectors_skips_adjoint_on_final_step() -> None:
         done=jnp.array(False),
     )
     estimate_on_final_step = jax.jit(
-        lambda state: expax.normest._estimate_1norm_from_test_vectors(
+        lambda state: expax.normest._estimate_onenorm_from_test_vectors(
             state,
             step=jnp.array(1),
-            apply_operator_to_test_vectors=lambda test_vectors: test_vectors,
-            apply_adjoint_to_sign_vectors=apply_adjoint_to_sign_vectors,
+            matvec_batch=lambda test_vectors: test_vectors,
+            matvec_batch_adjoint=matvec_batch_adjoint,
             max_steps=2,
             check_sign_parallelism=True,
         )

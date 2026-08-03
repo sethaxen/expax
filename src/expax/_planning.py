@@ -3,17 +3,11 @@ import jax.numpy as jnp
 from matfree import stochtrace
 
 from expax._operator import _validate_vector_space
-from expax.normest import _operator_products_on_basis_vectors
 
 
 def _default_trace_estimator(matvec, v_like, key, *parameters):
     flat_like, _ = _validate_vector_space(v_like)
     dimension = flat_like.size
-    if dimension < 3:
-        return jnp.trace(
-            _operator_products_on_basis_vectors(matvec, v_like, *parameters)
-        )
-
     num_samples = 2 if dimension >= 5 else 1
     sampler = stochtrace.sampler_normal(v_like, num=num_samples)
     integrand = stochtrace.leave_one_out_xtrace()
