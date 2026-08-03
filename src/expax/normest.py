@@ -45,6 +45,7 @@ def onenormest(
 def _sign_round_up(
     values: _VectorBatch,
 ) -> _VectorBatch:
+    """Return elementwise signs, assigning a sign of one to zero entries."""
     magnitudes = jnp.abs(values)
     return jnp.where(magnitudes == 0, 1.0, values / magnitudes)
 
@@ -53,6 +54,7 @@ def _parallel_vectors(
     left: Inexact[Array, "left dim"],
     right: Inexact[Array, "right dim"],
 ) -> Bool[Array, "left right"]:
+    """Identify parallel pairs of real-valued sign vectors."""
     return jnp.isclose(jnp.abs(jnp.inner(left, right)), left.shape[-1])
 
 
@@ -60,6 +62,7 @@ def _all_vectors_parallel(
     left: Inexact[Array, "left dim"],
     right: Inexact[Array, "right dim"],
 ) -> Bool[Array, ""]:
+    """Return whether every left vector is parallel to a right vector."""
     return jnp.all(jnp.any(_parallel_vectors(left, right), axis=-1))
 
 
@@ -67,6 +70,7 @@ def _vectors_needing_resampling(
     block: _VectorBatch,
     previous: Inexact[Array, "prev dim"],
 ) -> Bool[Array, " block"]:
+    """Flag sign vectors parallel to an earlier current or previous vector."""
     block_size = block.shape[0]
     vector = jnp.arange(block_size)
     earlier = vector < vector[:, None]
@@ -86,6 +90,7 @@ def _sample_real_signs(
     size: tuple[int, ...],
     dtype: DTypeLike,
 ) -> Inexact[Array, "*shape"]:
+    """Sample real Rademacher signs represented in the requested dtype."""
     rdtype = jnp.dtype(dtype).type(0).real.dtype
     sample = jax.random.rademacher(key, size, dtype=rdtype)
     return sample.astype(dtype)
@@ -97,6 +102,7 @@ def _initial_block(
     block_size: int,
     dtype: DTypeLike,
 ) -> _VectorBatch:
+    """Construct the normalized initial batch of nonparallel test vectors."""
     sample_key, resample_key = jax.random.split(key, 2)
     samples = _sample_real_signs(sample_key, (block_size - 1, size), dtype=dtype)
     block = jnp.concatenate((jnp.ones((1, size), dtype=dtype), samples), axis=0)
@@ -110,6 +116,7 @@ def _resample_parallel_vectors(
     block: _VectorBatch,
     previous: Inexact[Array, "prev dim"],
 ) -> _VectorBatch:
+    """Resample signs until none is parallel to an earlier or previous vector."""
     needs_resampling = _vectors_needing_resampling(block, previous)
 
     def cond_fun(state):
@@ -132,6 +139,19 @@ def _resample_parallel_vectors(
 
 
 class _Block1NormEstimatorState(NamedTuple):
+    """Bundle the complete loop-carried state across power-iteration steps.
+
+    Attributes:
+        test_vectors: Vectors to which the matvec will be applied next.
+        estimate: Running 1-norm estimate.
+        previous_sign_vectors: Sign vectors retained for the next parallelism check.
+        test_vector_indices: Basis indices represented by ``test_vectors``, with
+            placeholder values for the initial non-basis batch.
+        visited_basis_indices: Mask of basis vectors selected in prior steps.
+        key: Random key reserved for resampling parallel sign vectors.
+        done: Whether subsequent steps should leave the state unchanged.
+    """
+
     test_vectors: _VectorBatch
     estimate: _RealScalar
     previous_sign_vectors: _VectorBatch
@@ -142,6 +162,15 @@ class _Block1NormEstimatorState(NamedTuple):
 
 
 class _ForwardNormEstimate(NamedTuple):
+    """Bundle a forward response batch with the estimator state it updated.
+
+    Attributes:
+        step: Zero-based index of the current power-iteration step.
+        state: Estimator state whose running estimate includes this batch.
+        response_vectors: Forward-operator values at the current test vectors.
+        response_onenorms: One-norm of each response vector.
+    """
+
     step: Int[Array, ""]
     state: _Block1NormEstimatorState
     response_vectors: _VectorBatch
@@ -149,6 +178,16 @@ class _ForwardNormEstimate(NamedTuple):
 
 
 class _SignVectorIteration(NamedTuple):
+    """Bundle sign-vector data used for parallelism and adjoint selection.
+
+    Attributes:
+        step: Zero-based index of the current power-iteration step.
+        state: Estimator state produced by the forward-operator batch.
+        sign_vectors: Elementwise signs of the forward response vectors.
+        best_basis_index: Basis index associated with the strongest response,
+            with a placeholder value during the initial non-basis step.
+    """
+
     step: Int[Array, ""]
     state: _Block1NormEstimatorState
     sign_vectors: _VectorBatch
@@ -158,6 +197,7 @@ class _SignVectorIteration(NamedTuple):
 def _all_sign_vectors_parallel_to_previous(
     sign_iteration: _SignVectorIteration,
 ) -> Bool[Array, ""]:
+    """Check whether every sign vector repeats a previous direction."""
     return (sign_iteration.step > 0) & _all_vectors_parallel(
         sign_iteration.sign_vectors,
         sign_iteration.state.previous_sign_vectors,
@@ -167,6 +207,7 @@ def _all_sign_vectors_parallel_to_previous(
 def _resample_parallel_sign_vectors(
     sign_iteration: _SignVectorIteration,
 ) -> _SignVectorIteration:
+    """Advance the key and replace sign vectors that repeat another direction."""
     state = sign_iteration.state
     next_key, resample_key = jax.random.split(state.key)
     sign_vectors = _resample_parallel_vectors(
@@ -183,6 +224,7 @@ def _resample_parallel_sign_vectors(
 def _finish_norm_estimation(
     state: _Block1NormEstimatorState,
 ) -> _Block1NormEstimatorState:
+    """Mark a block 1-norm estimator state as finished."""
     return state._replace(done=jnp.array(True))
 
 
@@ -192,6 +234,7 @@ def _select_unvisited_basis_indices(
     num_test_vectors: int,
     index_dtype: DTypeLike,
 ) -> tuple[Int[Array, " block"], Bool[Array, ""]]:
+    """Select top unvisited basis indices and flag when every top choice was visited."""
     ranked = jnp.argsort(-basis_scores, stable=True)
     top_basis_indices_visited = jnp.all(
         visited_basis_indices[ranked[:num_test_vectors]]
@@ -208,6 +251,7 @@ def _score_basis_vectors_with_adjoint(
     sign_vectors: _VectorBatch,
     matvec_batch_adjoint: _BatchedMatvec,
 ) -> Real[Array, " dim"]:
+    """Score basis vectors by their largest adjoint-product magnitude."""
     adjoint_products = matvec_batch_adjoint(sign_vectors)
     return jnp.max(jnp.abs(adjoint_products), axis=0)
 
@@ -217,6 +261,7 @@ def _build_basis_test_vectors(
     size: int,
     dtype: DTypeLike,
 ) -> _VectorBatch:
+    """Construct one-hot test vectors for selected basis indices."""
     return jax.nn.one_hot(basis_indices, size, dtype=dtype)
 
 
@@ -225,6 +270,7 @@ def _choose_test_vectors_from_adjoint(
     *,
     matvec_batch_adjoint: _BatchedMatvec,
 ) -> _Block1NormEstimatorState:
+    """Choose the next basis test vectors from adjoint-product scores."""
     state = sign_iteration.state
     basis_scores = _score_basis_vectors_with_adjoint(
         sign_iteration.sign_vectors,
@@ -262,6 +308,8 @@ def _choose_test_vectors_from_adjoint_real(
     *,
     matvec_batch_adjoint: _BatchedMatvec,
 ) -> _Block1NormEstimatorState:
+    """Stop when all real signs repeat or resample before adjoint scoring."""
+
     def choose_after_resampling(sign_iteration):
         sign_iteration = _resample_parallel_sign_vectors(sign_iteration)
         return _choose_test_vectors_from_adjoint(
@@ -282,6 +330,7 @@ def _choose_next_test_vectors(
     *,
     matvec_batch_adjoint: _BatchedMatvec,
 ) -> _Block1NormEstimatorState:
+    """Derive sign vectors from responses and choose the next test vectors."""
     sign_vectors = _sign_round_up(forward_estimate.response_vectors)
     best_test_vector = jnp.argmax(forward_estimate.response_onenorms)
     best_basis_index = forward_estimate.state.test_vector_indices[best_test_vector]
@@ -313,6 +362,7 @@ def _estimate_onenorm_from_test_vectors(
     matvec_batch_adjoint: _BatchedMatvec,
     max_steps: int,
 ) -> _Block1NormEstimatorState:
+    """Apply the operator, update the estimate, then stop or choose test vectors."""
     response_vectors = matvec_batch(state.test_vectors)
     response_onenorms = jnp.linalg.norm(response_vectors, ord=1, axis=-1)
     estimate = jnp.max(response_onenorms)
@@ -344,6 +394,7 @@ def _block_onenorm_power_iteration_step(
     matvec_batch_adjoint: _BatchedMatvec,
     max_steps: int,
 ) -> _Block1NormEstimatorState:
+    """Run one guarded step of the block 1-norm power iteration."""
     estimate_from_test_vectors = partial(
         _estimate_onenorm_from_test_vectors,
         step=step,
@@ -371,6 +422,7 @@ def _materialize_operator(
 def _onenorm_exact(
     matvec_batch: _BatchedMatvec, v: Inexact[Array, " dim"]
 ) -> _RealScalar:
+    """Compute the exact operator 1-norm by materializing the operator."""
     mat = _materialize_operator(matvec_batch, v)
     return jnp.linalg.norm(mat, ord=1)
 
@@ -380,6 +432,8 @@ def _onenormest(
     max_steps: int,
     estimator_cost: int,
 ) -> Callable[..., _RealScalar]:
+    """Return an estimator that switches between exact and block power iteration."""
+
     def estimate_norm(
         matvec: Callable[..., _PyTreeVector],
         v_like: _PyTreeVector,
