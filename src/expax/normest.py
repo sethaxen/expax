@@ -20,14 +20,51 @@ _BatchedMatvec: TypeAlias = Callable[[_VectorBatch], _VectorBatch]
 def onenormest(
     *, block_size: int = 2, max_steps: int = 5
 ) -> tuple[Callable[..., _RealScalar], int]:
-    """Construct a block 1-norm estimator and its scalar-matvec cost model.
+    """Construct a block 1-norm estimator for linear operators.
 
-    The estimator implements Higham--Tisseur Algorithm 2.4. Each batch applies
-    ``block_size`` vectors in parallel, allowing matrix-backed operators to expose
-    matrix--matrix kernels analogous to level-3 BLAS. Whenever the dimension does
-    not exceed its reported cost, it instead evaluates every basis vector exactly.
-    Its reported scalar-matvec cost is the ``4 * block_size`` model used in
-    Al-Mohy--Higham equation (3.12).
+    The returned estimator computes a lower bound for the induced 1-norm of a
+    linear operator. It processes a block of `block_size` test vectors
+    together to improve reliability.
+
+    ```{note}
+    If the average cost of the estimator would exceed the cost of materializing
+    the operator and computing its exact 1-norm, the exact 1-norm is computed
+    instead.
+    ```
+
+    **Parameters**
+
+    - `block_size`: Number of test vectors processed in parallel during each
+      operator or adjoint application (default: 2). Must be a positive integer.
+      On the GPU, increasing the block size may provide significantly better
+      estimates with very little increase in runtime.
+    - `max_steps`: Maximum number of block power-iteration steps (default: 5).
+      Must be an integer greater than 1 but typically should not be changed.
+
+    **Returns**
+
+    A pair `(estimate_norm, cost)`. `cost` of a random matrix for `max_steps=5`
+    is typically `4 * block_size` scalar `matvec` operations. The estimator is
+    called as `estimate_norm(matvec, v_like, key, *parameters)` and accepts:
+
+    - `matvec`: A callable `matvec(vector, *parameters)` representing a linear
+      operator. Its input and output are PyTrees with the structure described by
+      `v_like`.
+    - `v_like`: A nonempty PyTree of JAX arrays describing the vector-space
+      structure, leaf shapes, and common inexact dtype. Its values are ignored.
+    - `key`: A JAX random key for (re)sampling test vectors.
+    - `*parameters`: Runtime arguments forwarded unchanged to `matvec` after the
+      vector argument.
+
+    `estimate_norm` returns the estimated operator 1-norm as a scalar JAX array.
+
+    **References**
+
+    Nicholas J. Higham and Françoise Tisseur, "A Block Algorithm for Matrix
+    1-Norm Estimation, with an Application to 1-Norm Pseudospectra," *SIAM
+    Journal on Matrix Analysis and Applications*, 21(4), 1185--1201, 2000.
+    [10.1137/S0895479899356080](https://doi.org/10.1137/S0895479899356080)
+    [eprint](https://eprints.maths.manchester.ac.uk/id/eprint/321)
     """
     if (
         not isinstance(block_size, int)
