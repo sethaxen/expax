@@ -30,35 +30,138 @@ def test_vectors_needing_resampling_prioritizes_earlier_current_vectors() -> Non
     np.testing.assert_array_equal(received, [False, True, True])
 
 
-def test_complex_sign_vectors_never_trigger_parallel_stop() -> None:
+def test_complex_sign_vectors_go_directly_to_adjoint() -> None:
+    adjoint_calls = []
     sign_vectors = jnp.array([[1.0, 1j, -1.0, -1j]], dtype=jnp.complex64)
-
-    received = expax.normest._all_sign_vectors_parallel_to_previous(
-        1,
-        sign_vectors,
-        sign_vectors,
-        check_parallel=False,
-    )
-
-    assert not bool(received)
-
-
-def test_complex_sign_vectors_are_not_resampled() -> None:
     key = jax.random.key(0)
-    sign_vectors = jnp.array([[1.0, 1j, -1.0, -1j]], dtype=jnp.complex64)
 
-    received_key, received_sign_vectors = expax.normest._resample_parallel_sign_vectors(
-        key,
-        sign_vectors,
-        sign_vectors,
-        check_parallel=False,
+    def record(vectors: Inexact[np.ndarray, "block dim"]) -> None:
+        adjoint_calls.append(np.asarray(vectors))
+
+    def matvec_batch_adjoint(
+        vectors: Inexact[Array, "block dim"],
+    ) -> Inexact[Array, "block dim"]:
+        jax.debug.callback(record, vectors)
+        return vectors
+
+    state = expax.normest._Block1NormEstimatorState(
+        test_vectors=jnp.ones_like(sign_vectors),
+        estimate=jnp.array(0.0),
+        previous_sign_vectors=sign_vectors,
+        test_vector_indices=jnp.zeros((1,), dtype=jnp.int32),
+        visited_basis_indices=jnp.zeros((4,), dtype=bool),
+        key=key,
+        done=jnp.array(False),
     )
+    forward_estimate = expax.normest._ForwardNormEstimate(
+        step=jnp.array(1),
+        state=state,
+        response_vectors=sign_vectors,
+        response_onenorms=jnp.array([4.0]),
+    )
+    received = jax.jit(
+        lambda estimate: expax.normest._choose_next_test_vectors(
+            estimate,
+            matvec_batch_adjoint=matvec_batch_adjoint,
+        )
+    )(forward_estimate)
+    jax.block_until_ready(received.estimate)
 
+    assert len(adjoint_calls) == 1
+    np.testing.assert_array_equal(adjoint_calls[0], sign_vectors)
     np.testing.assert_array_equal(
-        jax.random.key_data(received_key),
+        jax.random.key_data(received.key),
         jax.random.key_data(key),
     )
-    np.testing.assert_array_equal(received_sign_vectors, sign_vectors)
+
+
+def test_all_parallel_real_sign_vectors_do_not_resample() -> None:
+    adjoint_calls = []
+    key = jax.random.key(0)
+    sign_vectors = jnp.array([[1.0, 1.0, 1.0, 1.0], [1.0, -1.0, 1.0, -1.0]])
+
+    def record(vectors: Inexact[np.ndarray, "block dim"]) -> None:
+        adjoint_calls.append(np.asarray(vectors))
+
+    def matvec_batch_adjoint(
+        vectors: Inexact[Array, "block dim"],
+    ) -> Inexact[Array, "block dim"]:
+        jax.debug.callback(record, vectors)
+        return vectors
+
+    state = expax.normest._Block1NormEstimatorState(
+        test_vectors=jnp.ones_like(sign_vectors),
+        estimate=jnp.array(0.0),
+        previous_sign_vectors=sign_vectors,
+        test_vector_indices=jnp.zeros((2,), dtype=jnp.int32),
+        visited_basis_indices=jnp.zeros((4,), dtype=bool),
+        key=key,
+        done=jnp.array(False),
+    )
+    forward_estimate = expax.normest._ForwardNormEstimate(
+        step=jnp.array(1),
+        state=state,
+        response_vectors=sign_vectors,
+        response_onenorms=jnp.ones((2,)),
+    )
+
+    def choose_next_test_vectors(estimate):
+        return expax.normest._choose_next_test_vectors(
+            estimate,
+            matvec_batch_adjoint=matvec_batch_adjoint,
+        )
+
+    jaxpr = jax.make_jaxpr(choose_next_test_vectors)(forward_estimate).jaxpr
+    received = jax.jit(choose_next_test_vectors)(forward_estimate)
+    jax.block_until_ready(received.done)
+
+    assert not any(eqn.primitive.name == "while" for eqn in jaxpr.eqns)
+    assert bool(received.done)
+    assert not adjoint_calls
+    np.testing.assert_array_equal(
+        jax.random.key_data(received.key),
+        jax.random.key_data(key),
+    )
+
+
+def test_continuing_real_iteration_uses_resampled_sign_vectors() -> None:
+    key = jax.random.key(0)
+    sign_vectors = jnp.array([[1.0, 1.0, 1.0, 1.0], [1.0, -1.0, 1.0, -1.0]])
+    previous_sign_vectors = jnp.array([[1.0, 1.0, 1.0, 1.0], [1.0, 1.0, -1.0, -1.0]])
+    state = expax.normest._Block1NormEstimatorState(
+        test_vectors=jnp.ones_like(sign_vectors),
+        estimate=jnp.array(0.0),
+        previous_sign_vectors=previous_sign_vectors,
+        test_vector_indices=jnp.zeros((2,), dtype=jnp.int32),
+        visited_basis_indices=jnp.zeros((4,), dtype=bool),
+        key=key,
+        done=jnp.array(False),
+    )
+    forward_estimate = expax.normest._ForwardNormEstimate(
+        step=jnp.array(1),
+        state=state,
+        response_vectors=sign_vectors,
+        response_onenorms=jnp.ones((2,)),
+    )
+
+    received = jax.jit(
+        lambda estimate: expax.normest._choose_next_test_vectors(
+            estimate,
+            matvec_batch_adjoint=lambda vectors: vectors,
+        )
+    )(forward_estimate)
+
+    needs_resampling = expax.normest._vectors_needing_resampling(
+        received.previous_sign_vectors,
+        previous_sign_vectors,
+    )
+    assert not bool(jnp.any(needs_resampling))
+    assert not bool(
+        jnp.array_equal(
+            jax.random.key_data(received.key),
+            jax.random.key_data(key),
+        )
+    )
 
 
 def test_resample_parallel_vectors_uses_one_block_retry_loop() -> None:
@@ -263,7 +366,6 @@ def test_estimate_onenorm_from_test_vectors_uses_adjoint_before_final_step() -> 
             matvec_batch=lambda test_vectors: test_vectors,
             matvec_batch_adjoint=matvec_batch_adjoint,
             max_steps=2,
-            check_sign_parallelism=True,
         )
     )
 
@@ -301,7 +403,6 @@ def test_estimate_onenorm_from_test_vectors_skips_adjoint_on_final_step() -> Non
             matvec_batch=lambda test_vectors: test_vectors,
             matvec_batch_adjoint=matvec_batch_adjoint,
             max_steps=2,
-            check_sign_parallelism=True,
         )
     )
 

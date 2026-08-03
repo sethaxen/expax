@@ -131,39 +131,6 @@ def _resample_parallel_vectors(
     return block
 
 
-def _all_sign_vectors_parallel_to_previous(
-    step: int | Int[Array, ""],
-    sign_vectors: _VectorBatch,
-    previous_sign_vectors: _VectorBatch,
-    *,
-    check_parallel: bool,
-) -> Bool[Array, ""]:
-    if not check_parallel:
-        return jnp.array(False)
-    return (step > 0) & _all_vectors_parallel(
-        sign_vectors,
-        previous_sign_vectors,
-    )
-
-
-def _resample_parallel_sign_vectors(
-    key: PRNGKeyArray,
-    sign_vectors: _VectorBatch,
-    previous_sign_vectors: _VectorBatch,
-    *,
-    check_parallel: bool,
-) -> tuple[PRNGKeyArray, _VectorBatch]:
-    if not check_parallel:
-        return key, sign_vectors
-    next_key, resample_key = jax.random.split(key)
-    sign_vectors = _resample_parallel_vectors(
-        resample_key,
-        sign_vectors,
-        previous_sign_vectors,
-    )
-    return next_key, sign_vectors
-
-
 class _Block1NormEstimatorState(NamedTuple):
     test_vectors: _VectorBatch
     estimate: _RealScalar
@@ -186,6 +153,31 @@ class _SignVectorIteration(NamedTuple):
     state: _Block1NormEstimatorState
     sign_vectors: _VectorBatch
     best_basis_index: Int[Array, ""]
+
+
+def _all_sign_vectors_parallel_to_previous(
+    sign_iteration: _SignVectorIteration,
+) -> Bool[Array, ""]:
+    return (sign_iteration.step > 0) & _all_vectors_parallel(
+        sign_iteration.sign_vectors,
+        sign_iteration.state.previous_sign_vectors,
+    )
+
+
+def _resample_parallel_sign_vectors(
+    sign_iteration: _SignVectorIteration,
+) -> _SignVectorIteration:
+    state = sign_iteration.state
+    next_key, resample_key = jax.random.split(state.key)
+    sign_vectors = _resample_parallel_vectors(
+        resample_key,
+        sign_iteration.sign_vectors,
+        state.previous_sign_vectors,
+    )
+    return sign_iteration._replace(
+        state=state._replace(key=next_key),
+        sign_vectors=sign_vectors,
+    )
 
 
 def _finish_norm_estimation(
@@ -232,17 +224,10 @@ def _choose_test_vectors_from_adjoint(
     sign_iteration: _SignVectorIteration,
     *,
     matvec_batch_adjoint: _BatchedMatvec,
-    check_sign_parallelism: bool,
 ) -> _Block1NormEstimatorState:
     state = sign_iteration.state
-    next_key, sign_vectors = _resample_parallel_sign_vectors(
-        state.key,
-        sign_iteration.sign_vectors,
-        state.previous_sign_vectors,
-        check_parallel=check_sign_parallelism,
-    )
     basis_scores = _score_basis_vectors_with_adjoint(
-        sign_vectors,
+        sign_iteration.sign_vectors,
         matvec_batch_adjoint,
     )
     selected_basis_indices, top_basis_indices_visited = _select_unvisited_basis_indices(
@@ -265,11 +250,30 @@ def _choose_test_vectors_from_adjoint(
     )
     return state._replace(
         test_vectors=next_test_vectors,
-        previous_sign_vectors=sign_vectors,
+        previous_sign_vectors=sign_iteration.sign_vectors,
         test_vector_indices=selected_basis_indices,
         visited_basis_indices=next_visited_basis_indices,
-        key=next_key,
         done=best_basis_still_optimal | top_basis_indices_visited,
+    )
+
+
+def _choose_test_vectors_from_adjoint_real(
+    sign_iteration: _SignVectorIteration,
+    *,
+    matvec_batch_adjoint: _BatchedMatvec,
+) -> _Block1NormEstimatorState:
+    def choose_after_resampling(sign_iteration):
+        sign_iteration = _resample_parallel_sign_vectors(sign_iteration)
+        return _choose_test_vectors_from_adjoint(
+            sign_iteration,
+            matvec_batch_adjoint=matvec_batch_adjoint,
+        )
+
+    return jax.lax.cond(
+        _all_sign_vectors_parallel_to_previous(sign_iteration),
+        lambda iteration: _finish_norm_estimation(iteration.state),
+        choose_after_resampling,
+        sign_iteration,
     )
 
 
@@ -277,7 +281,6 @@ def _choose_next_test_vectors(
     forward_estimate: _ForwardNormEstimate,
     *,
     matvec_batch_adjoint: _BatchedMatvec,
-    check_sign_parallelism: bool,
 ) -> _Block1NormEstimatorState:
     sign_vectors = _sign_round_up(forward_estimate.response_vectors)
     best_test_vector = jnp.argmax(forward_estimate.response_onenorms)
@@ -288,22 +291,17 @@ def _choose_next_test_vectors(
         sign_vectors=sign_vectors,
         best_basis_index=best_basis_index,
     )
+
     choose_from_adjoint = partial(
         _choose_test_vectors_from_adjoint,
         matvec_batch_adjoint=matvec_batch_adjoint,
-        check_sign_parallelism=check_sign_parallelism,
     )
-    all_sign_vectors_parallel = _all_sign_vectors_parallel_to_previous(
-        forward_estimate.step,
-        sign_vectors,
-        forward_estimate.state.previous_sign_vectors,
-        check_parallel=check_sign_parallelism,
-    )
-    return jax.lax.cond(
-        all_sign_vectors_parallel,
-        lambda iter: _finish_norm_estimation(iter.state),
-        choose_from_adjoint,
+
+    if jnp.issubdtype(sign_vectors.dtype, jnp.complexfloating):
+        return choose_from_adjoint(sign_iteration)
+    return _choose_test_vectors_from_adjoint_real(
         sign_iteration,
+        matvec_batch_adjoint=matvec_batch_adjoint,
     )
 
 
@@ -314,7 +312,6 @@ def _estimate_onenorm_from_test_vectors(
     matvec_batch: _BatchedMatvec,
     matvec_batch_adjoint: _BatchedMatvec,
     max_steps: int,
-    check_sign_parallelism: bool,
 ) -> _Block1NormEstimatorState:
     response_vectors = matvec_batch(state.test_vectors)
     response_onenorms = jnp.linalg.norm(response_vectors, ord=1, axis=-1)
@@ -329,7 +326,6 @@ def _estimate_onenorm_from_test_vectors(
     choose_next_test_vectors = partial(
         _choose_next_test_vectors,
         matvec_batch_adjoint=matvec_batch_adjoint,
-        check_sign_parallelism=check_sign_parallelism,
     )
     stop_after_forward = no_improvement | (step == max_steps - 1)
     return jax.lax.cond(
@@ -347,7 +343,6 @@ def _block_onenorm_power_iteration_step(
     matvec_batch: _BatchedMatvec,
     matvec_batch_adjoint: _BatchedMatvec,
     max_steps: int,
-    check_sign_parallelism: bool,
 ) -> _Block1NormEstimatorState:
     estimate_from_test_vectors = partial(
         _estimate_onenorm_from_test_vectors,
@@ -355,7 +350,6 @@ def _block_onenorm_power_iteration_step(
         matvec_batch=matvec_batch,
         matvec_batch_adjoint=matvec_batch_adjoint,
         max_steps=max_steps,
-        check_sign_parallelism=check_sign_parallelism,
     )
     return jax.lax.cond(
         state.done,
@@ -411,9 +405,6 @@ def _onenormest(
         )
 
         real_dtype = jnp.real(flat_like).dtype
-        check_sign_parallelism = not jnp.issubdtype(
-            flat_like.dtype, jnp.complexfloating
-        )
 
         initial_key, resample_key = jax.random.split(key)
 
@@ -437,7 +428,6 @@ def _onenormest(
             matvec_batch=matvec_batch,
             matvec_batch_adjoint=matvec_batch_adjoint,
             max_steps=max_steps,
-            check_sign_parallelism=check_sign_parallelism,
         )
         state = jax.lax.fori_loop(0, max_steps, power_iteration_step, state)
         return state.estimate
