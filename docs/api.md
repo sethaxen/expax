@@ -8,6 +8,6 @@
 
 ## Norm estimators
 
-```{eval-rst}
-.. autofunction:: expax.normest.onenormest
+```{autodoc2-object} expax.normest.onenormest
+render_plugin = "myst"
 ```
