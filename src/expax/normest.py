@@ -234,7 +234,7 @@ def _select_unvisited_basis_indices(
     index_dtype: DTypeLike,
 ) -> tuple[Int[Array, " block"], Bool[Array, ""]]:
     """Select top unvisited basis indices and flag when every top choice was visited."""
-    ranked = jnp.argsort(-basis_scores, stable=True)
+    ranked = jnp.argsort(basis_scores, stable=True, descending=True)
     top_basis_indices_visited = jnp.all(
         visited_basis_indices[ranked[:num_test_vectors]]
     )
