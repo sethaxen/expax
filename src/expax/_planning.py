@@ -1,6 +1,5 @@
 import jax
 import jax.numpy as jnp
-from jax.flatten_util import ravel_pytree
 from matfree import stochtrace
 
 from expax._operator import _validate_vector_space
@@ -9,31 +8,11 @@ from expax._operator import _validate_vector_space
 def _default_trace_estimator(matvec, v_like, key, *parameters):
     flat_like, _ = _validate_vector_space(v_like)
     dimension = flat_like.size
-    if dimension < 3:
-        return jnp.trace(_operator_columns(matvec, v_like, *parameters))
-
     num_samples = 2 if dimension >= 5 else 1
     sampler = stochtrace.sampler_normal(v_like, num=num_samples)
     integrand = stochtrace.leave_one_out_xtrace()
     estimate = stochtrace.estimator_leave_one_out(integrand, sampler)
     return estimate(matvec, key, *parameters)
-
-
-def _exact_1_norm_estimator(matvec, v_like, key, *parameters):
-    del key
-    columns = _operator_columns(matvec, v_like, *parameters)
-    return jnp.max(jnp.sum(jnp.abs(columns), axis=-1))
-
-
-def _operator_columns(matvec, v_like, *parameters):
-    flat_like, unravel = _validate_vector_space(v_like)
-    basis = jnp.eye(flat_like.size, dtype=flat_like.dtype)
-
-    def apply(vector):
-        image, _ = ravel_pytree(matvec(unravel(vector), *parameters))
-        return image
-
-    return jax.vmap(apply)(basis)
 
 
 def _build_operator_plan(

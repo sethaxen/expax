@@ -27,11 +27,13 @@ def _validate_vector_space(v_like):
     return ravel_pytree(v_like)
 
 
-def _linear_adjoint(matvec, v_like):
-    def adjoint(y, *parameters):
-        transpose = jax.linear_transpose(lambda x: matvec(x, *parameters), v_like)
-        y_conjugate = jax.tree.map(jnp.conj, y)
-        (result,) = transpose(y_conjugate)
-        return jax.tree.map(jnp.conj, result)
+def _linear_adjoint(func, *primals):
+    transpose = jax.linear_transpose(func, *primals)
+
+    def tree_conj(x):
+        return jax.tree.map(jnp.conj, x)
+
+    def adjoint(*primal_results):
+        return tree_conj(transpose(*tree_conj(primal_results)))
 
     return adjoint

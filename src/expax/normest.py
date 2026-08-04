@@ -1,17 +1,69 @@
 """Composable estimators for operator norms."""
 
+from collections.abc import Callable
+from functools import partial
+from typing import Any, NamedTuple, TypeAlias
+
 import jax
 import jax.numpy as jnp
 from jax.flatten_util import ravel_pytree
+from jaxtyping import Array, Bool, DTypeLike, Inexact, Int, PRNGKeyArray, PyTree, Real
 
 from expax._operator import _linear_adjoint, _validate_vector_space
 
+_RealScalar: TypeAlias = Real[Array, ""]
+_PyTreeVector: TypeAlias = PyTree[Inexact[Array, "..."]]
+_VectorBatch: TypeAlias = Inexact[Array, "block dim"]
+_BatchedMatvec: TypeAlias = Callable[[_VectorBatch], _VectorBatch]
 
-def onenormest(*, block_size=2, max_steps=5):
-    """Construct a block 1-norm estimator and its scalar-matvec cost model.
 
-    The estimator implements Higham--Tisseur Algorithm 2.4. Its reported cost is
-    the ``4 * block_size`` model used in Al-Mohy--Higham equation (3.12).
+def onenormest(
+    *, block_size: int = 2, max_steps: int = 5
+) -> tuple[Callable[..., _RealScalar], int]:
+    """Construct a block 1-norm estimator for linear operators.
+
+    The returned estimator computes a lower bound for the induced 1-norm of a
+    linear operator. It processes a block of `block_size` test vectors
+    together to improve reliability.
+
+    ```{note}
+    If the vector-space dimension does not exceed `4 * block_size`, the estimator
+    materializes the operator and returns its exact 1-norm instead.
+    ```
+
+    **Parameters**
+
+    - `block_size`: Number of test vectors processed in parallel during each
+      operator or adjoint application (default: 2). Must be a positive integer.
+      On the GPU, increasing the block size may provide significantly better
+      estimates with very little increase in runtime.
+    - `max_steps`: Maximum number of block power-iteration steps (default: 5).
+      Must be an integer greater than 1 but typically should not be changed.
+
+    **Returns**
+
+    A pair `(estimate_norm, cost)`. `cost` of a random matrix for `max_steps=5`
+    is typically `4 * block_size` scalar `matvec` operations. The estimator is
+    called as `estimate_norm(matvec, v_like, key, *parameters)` and accepts:
+
+    - `matvec`: A callable `matvec(vector, *parameters)` representing a linear
+      operator. Its input and output are PyTrees with the structure described by
+      `v_like`.
+    - `v_like`: A nonempty PyTree of JAX arrays describing the vector-space
+      structure, leaf shapes, and common inexact dtype. Its values are ignored.
+    - `key`: A JAX random key for (re)sampling test vectors.
+    - `*parameters`: Runtime arguments forwarded unchanged to `matvec` after the
+      vector argument.
+
+    `estimate_norm` returns the estimated operator 1-norm as a scalar JAX array.
+
+    **References**
+
+    Nicholas J. Higham and Françoise Tisseur, "A Block Algorithm for Matrix
+    1-Norm Estimation, with an Application to 1-Norm Pseudospectra," *SIAM
+    Journal on Matrix Analysis and Applications*, 21(4), 1185--1201, 2000.
+    [10.1137/S0895479899356080](https://doi.org/10.1137/S0895479899356080)
+    [eprint](https://eprints.maths.manchester.ac.uk/id/eprint/321)
     """
     if (
         not isinstance(block_size, int)
@@ -22,222 +74,455 @@ def onenormest(*, block_size=2, max_steps=5):
     if not isinstance(max_steps, int) or isinstance(max_steps, bool) or max_steps < 2:
         raise ValueError("max_steps must be an integer of at least two")
 
-    return _estimate_norm_factory(block_size, max_steps), 4 * block_size
+    estimator_cost = 4 * block_size
+    return _onenormest(block_size, max_steps, estimator_cost), estimator_cost
 
 
-def _sign_round_up(values):
+def _sign_round_up(values: _VectorBatch) -> _VectorBatch:
+    """Return elementwise signs, assigning a sign of one to zero entries."""
     magnitudes = jnp.abs(values)
-    return jnp.where(magnitudes == 0, jnp.ones_like(values), values / magnitudes)
+    return jnp.where(magnitudes == 0, 1.0, values / magnitudes)
 
 
-def _is_parallel_to_any(vector, others):
-    inner_products = jnp.abs(jnp.sum(jnp.conj(others) * vector, axis=-1))
-    return jnp.any(jnp.isclose(inner_products, vector.size))
+def _parallel_sign_vectors(
+    left: Inexact[Array, "left dim"],
+    right: Inexact[Array, "right dim"],
+) -> Bool[Array, "left right"]:
+    """Identify parallel pairs of real-valued sign vectors."""
+    return jnp.isclose(jnp.abs(jnp.inner(left, right)), left.shape[-1])
 
 
-def _all_columns_parallel(left, right):
-    inner_products = jnp.abs(jnp.conj(left) @ right.T)
-    return jnp.all(jnp.any(jnp.isclose(inner_products, left.shape[-1]), axis=-1))
+def _all_sign_vectors_parallel(
+    left: Inexact[Array, "left dim"],
+    right: Inexact[Array, "right dim"],
+) -> Bool[Array, ""]:
+    """Return whether every left sign vector is parallel to a right sign vector."""
+    return jnp.all(jnp.any(_parallel_sign_vectors(left, right), axis=-1))
 
 
-def _sample_sign_vector(key, size, dtype):
-    key, sample_key = jax.random.split(key)
-    real_dtype = jnp.real(jnp.zeros((), dtype=dtype)).dtype
-    sample = jax.random.rademacher(sample_key, (size,), dtype=real_dtype)
-    return key, sample.astype(dtype)
+def _sign_vectors_to_resample(
+    block: _VectorBatch,
+    previous: Inexact[Array, "prev dim"],
+) -> Bool[Array, " block"]:
+    """Flag sign vectors parallel to an earlier current or previous sign vector."""
+    block_size = block.shape[0]
+    vector = jnp.arange(block_size)
+    earlier = vector < vector[:, None]
+    comparisons = jnp.concatenate(
+        (
+            earlier,
+            jnp.ones((block_size, previous.shape[0]), dtype=bool),
+        ),
+        axis=1,
+    )
+    others = jnp.concatenate((block, previous), axis=0)
+    return jnp.any(_parallel_sign_vectors(block, others) & comparisons, axis=-1)
 
 
-def _resample_until_independent(key, vector, others):
+def _sample_real_signs(
+    key: PRNGKeyArray,
+    size: tuple[int, ...],
+    dtype: DTypeLike,
+) -> Inexact[Array, "*shape"]:
+    """Sample real Rademacher signs represented in the requested dtype."""
+    rdtype = jnp.dtype(dtype).type(0).real.dtype
+    sample = jax.random.rademacher(key, size, dtype=rdtype)
+    return sample.astype(dtype)
+
+
+def _initial_block(
+    key: PRNGKeyArray,
+    size: int,
+    block_size: int,
+    dtype: DTypeLike,
+) -> _VectorBatch:
+    """Construct the normalized initial batch of nonparallel test vectors."""
+    sample_key, resample_key = jax.random.split(key, 2)
+    samples = _sample_real_signs(sample_key, (block_size - 1, size), dtype=dtype)
+    block = jnp.concatenate((jnp.ones((1, size), dtype=dtype), samples), axis=0)
+    previous = jnp.empty((0, size), dtype=dtype)
+    block = _resample_parallel_sign_vectors(resample_key, block, previous)
+    return block / size
+
+
+def _resample_parallel_sign_vectors(
+    key: PRNGKeyArray,
+    block: _VectorBatch,
+    previous: Inexact[Array, "prev dim"],
+) -> _VectorBatch:
+    """Resample vectors until none is parallel to an earlier or previous vector."""
+    needs_resampling = _sign_vectors_to_resample(block, previous)
+
     def cond_fun(state):
-        _, candidate = state
-        return _is_parallel_to_any(candidate, others)
+        _, _, needs_resampling = state
+        return jnp.any(needs_resampling)
 
     def body_fun(state):
-        next_key, _ = state
-        return _sample_sign_vector(next_key, vector.size, vector.dtype)
+        next_key, current, needs_resampling = state
+        next_key, sample_key = jax.random.split(next_key)
+        samples = _sample_real_signs(sample_key, current.shape, current.dtype)
+        current = jnp.where(needs_resampling[:, None], samples, current)
+        return (
+            next_key,
+            current,
+            _sign_vectors_to_resample(current, previous),
+        )
 
-    return jax.lax.while_loop(cond_fun, body_fun, (key, vector))
-
-
-def _initial_block(key, size, block_size, dtype):
-    block = jnp.ones((block_size, size), dtype=dtype)
-    for column in range(1, block_size):
-        key, candidate = _sample_sign_vector(key, size, dtype)
-        key, candidate = _resample_until_independent(key, candidate, block[:column])
-        block = block.at[column].set(candidate)
-    return key, block / size
-
-
-def _resample_parallel_columns(key, block, previous):
-    for column in range(block.shape[0]):
-        forbidden = jnp.concatenate((block[:column], previous), axis=0)
-        key, candidate = _resample_until_independent(key, block[column], forbidden)
-        block = block.at[column].set(candidate)
-    return key, block
+    _, block, _ = jax.lax.while_loop(cond_fun, body_fun, (key, block, needs_resampling))
+    return block
 
 
-def _estimate_norm_factory(block_size, max_steps):
-    def estimate_norm(matvec, v_like, key, *parameters):
+class _Block1NormEstimatorState(NamedTuple):
+    """Bundle the complete loop-carried state across power-iteration steps.
+
+    Attributes:
+        test_vectors: Vectors to which the matvec will be applied next.
+        estimate: Running 1-norm estimate.
+        previous_result_probes: Result probes retained for the next parallelism check.
+        test_vector_indices: Basis indices represented by ``test_vectors``, with
+            placeholder values for the initial non-basis batch.
+        visited_basis_indices: Mask of basis vectors selected in prior steps.
+        key: Random key reserved for resampling parallel result probes.
+        done: Whether subsequent steps should leave the state unchanged.
+    """
+
+    test_vectors: _VectorBatch
+    estimate: _RealScalar
+    previous_result_probes: _VectorBatch
+    test_vector_indices: Int[Array, " block"]
+    visited_basis_indices: Bool[Array, " dim"]
+    key: PRNGKeyArray
+    done: Bool[Array, ""]
+
+
+class _ForwardNormEstimate(NamedTuple):
+    """Bundle a result-vector batch with the estimator state it updated.
+
+    Attributes:
+        step: Zero-based index of the current power-iteration step.
+        state: Estimator state whose running estimate includes this batch.
+        result_vectors: Forward-operator values at the current test vectors.
+        result_onenorms: One-norm of each result vector.
+    """
+
+    step: Int[Array, ""]
+    state: _Block1NormEstimatorState
+    result_vectors: _VectorBatch
+    result_onenorms: Real[Array, " block"]
+
+
+class _ResultProbeIteration(NamedTuple):
+    """Bundle result probes used for parallelism and test-vector selection.
+
+    Attributes:
+        step: Zero-based index of the current power-iteration step.
+        state: Estimator state produced by the forward-operator batch.
+        result_probes: Norming probes for the forward result vectors, possibly
+            replaced by random probes to avoid repeated pullbacks.
+        best_basis_index: Basis index associated with the strongest result,
+            with a placeholder value during the initial non-basis step.
+    """
+
+    step: Int[Array, ""]
+    state: _Block1NormEstimatorState
+    result_probes: _VectorBatch
+    best_basis_index: Int[Array, ""]
+
+
+def _all_result_probes_parallel_to_previous(
+    probe_iteration: _ResultProbeIteration,
+) -> Bool[Array, ""]:
+    """Check whether every result probe repeats a previous direction."""
+    return (probe_iteration.step > 0) & _all_sign_vectors_parallel(
+        probe_iteration.result_probes,
+        probe_iteration.state.previous_result_probes,
+    )
+
+
+def _resample_parallel_result_probes(
+    probe_iteration: _ResultProbeIteration,
+) -> _ResultProbeIteration:
+    """Advance the key and replace result probes that repeat another direction."""
+    state = probe_iteration.state
+    next_key, resample_key = jax.random.split(state.key)
+    result_probes = _resample_parallel_sign_vectors(
+        resample_key,
+        probe_iteration.result_probes,
+        state.previous_result_probes,
+    )
+    return probe_iteration._replace(
+        state=state._replace(key=next_key),
+        result_probes=result_probes,
+    )
+
+
+def _finish_norm_estimation(
+    state: _Block1NormEstimatorState,
+) -> _Block1NormEstimatorState:
+    """Mark a block 1-norm estimator state as finished."""
+    return state._replace(done=jnp.array(True))
+
+
+def _select_unvisited_basis_indices(
+    basis_scores: Real[Array, " dim"],
+    visited_basis_indices: Bool[Array, " dim"],
+    num_test_vectors: int,
+    index_dtype: DTypeLike,
+) -> tuple[Int[Array, " block"], Bool[Array, ""]]:
+    """Select top unvisited basis indices and flag when every top choice was visited."""
+    ranked = jnp.argsort(basis_scores, stable=True, descending=True)
+    top_basis_indices_visited = jnp.all(
+        visited_basis_indices[ranked[:num_test_vectors]]
+    )
+    unseen_first = jnp.argsort(
+        visited_basis_indices[ranked],
+        stable=True,
+    )
+    selected_basis_indices = ranked[unseen_first[:num_test_vectors]].astype(index_dtype)
+    return selected_basis_indices, top_basis_indices_visited
+
+
+def _score_basis_vectors(
+    result_probes: _VectorBatch,
+    matvec_batch_adjoint: _BatchedMatvec,
+) -> Real[Array, " dim"]:
+    """Pull result probes back to test probes and score each basis vector."""
+    test_probes = matvec_batch_adjoint(result_probes)
+    return jnp.max(jnp.abs(test_probes), axis=0)
+
+
+def _build_basis_test_vectors(
+    basis_indices: Int[Array, " block"],
+    size: int,
+    dtype: DTypeLike,
+) -> _VectorBatch:
+    """Construct one-hot test vectors for selected basis indices."""
+    return jax.nn.one_hot(basis_indices, size, dtype=dtype)
+
+
+def _select_test_vectors(
+    probe_iteration: _ResultProbeIteration,
+    *,
+    matvec_batch_adjoint: _BatchedMatvec,
+) -> _Block1NormEstimatorState:
+    """Choose the next basis test vectors from result-probe pullbacks."""
+    state = probe_iteration.state
+    basis_scores = _score_basis_vectors(
+        probe_iteration.result_probes,
+        matvec_batch_adjoint,
+    )
+    selected_basis_indices, top_basis_indices_visited = _select_unvisited_basis_indices(
+        basis_scores,
+        state.visited_basis_indices,
+        state.test_vectors.shape[0],
+        state.test_vector_indices.dtype,
+    )
+    best_basis_still_optimal = (probe_iteration.step > 0) & jnp.isclose(
+        jnp.max(basis_scores),
+        basis_scores[probe_iteration.best_basis_index],
+    )
+    next_visited_basis_indices = state.visited_basis_indices.at[
+        selected_basis_indices
+    ].set(True)
+    next_test_vectors = _build_basis_test_vectors(
+        selected_basis_indices,
+        state.visited_basis_indices.size,
+        state.test_vectors.dtype,
+    )
+    return state._replace(
+        test_vectors=next_test_vectors,
+        previous_result_probes=probe_iteration.result_probes,
+        test_vector_indices=selected_basis_indices,
+        visited_basis_indices=next_visited_basis_indices,
+        done=best_basis_still_optimal | top_basis_indices_visited,
+    )
+
+
+def _select_test_vectors_real(
+    probe_iteration: _ResultProbeIteration,
+    *,
+    matvec_batch_adjoint: _BatchedMatvec,
+) -> _Block1NormEstimatorState:
+    """Select test vectors optionally with resampled probes.
+
+    If all probes are repeated, terminate the estimation.
+    """
+
+    def choose_after_resampling(probe_iteration):
+        probe_iteration = _resample_parallel_result_probes(probe_iteration)
+        return _select_test_vectors(
+            probe_iteration,
+            matvec_batch_adjoint=matvec_batch_adjoint,
+        )
+
+    return jax.lax.cond(
+        _all_result_probes_parallel_to_previous(probe_iteration),
+        lambda iteration: _finish_norm_estimation(iteration.state),
+        choose_after_resampling,
+        probe_iteration,
+    )
+
+
+def _choose_next_test_vectors(
+    forward_estimate: _ForwardNormEstimate,
+    *,
+    matvec_batch_adjoint: _BatchedMatvec,
+) -> _Block1NormEstimatorState:
+    """Derive result probes and use their pullbacks to choose test vectors."""
+    # result probes are here the subgradients of the 1-norm of the result vectors
+    result_probes = _sign_round_up(forward_estimate.result_vectors)
+    best_test_vector = jnp.argmax(forward_estimate.result_onenorms)
+    best_basis_index = forward_estimate.state.test_vector_indices[best_test_vector]
+    probe_iteration = _ResultProbeIteration(
+        step=forward_estimate.step,
+        state=forward_estimate.state,
+        result_probes=result_probes,
+        best_basis_index=best_basis_index,
+    )
+
+    choose_from_adjoint = partial(
+        _select_test_vectors,
+        matvec_batch_adjoint=matvec_batch_adjoint,
+    )
+
+    if jnp.issubdtype(result_probes.dtype, jnp.complexfloating):
+        return choose_from_adjoint(probe_iteration)
+    return _select_test_vectors_real(
+        probe_iteration,
+        matvec_batch_adjoint=matvec_batch_adjoint,
+    )
+
+
+def _estimate_onenorm_from_test_vectors(
+    state: _Block1NormEstimatorState,
+    *,
+    step: Int[Array, ""],
+    matvec_batch: _BatchedMatvec,
+    matvec_batch_adjoint: _BatchedMatvec,
+    max_steps: int,
+) -> _Block1NormEstimatorState:
+    """Apply the operator, update the estimate, then stop or choose test vectors."""
+    result_vectors = matvec_batch(state.test_vectors)
+    result_onenorms = jnp.linalg.vector_norm(result_vectors, ord=1, axis=-1)
+    estimate = jnp.max(result_onenorms)
+    no_improvement = (step > 0) & (estimate <= state.estimate)
+    forward_estimate = _ForwardNormEstimate(
+        step=step,
+        state=state._replace(estimate=jnp.maximum(state.estimate, estimate)),
+        result_vectors=result_vectors,
+        result_onenorms=result_onenorms,
+    )
+    choose_next_test_vectors = partial(
+        _choose_next_test_vectors,
+        matvec_batch_adjoint=matvec_batch_adjoint,
+    )
+    stop_after_forward = no_improvement | (step == max_steps - 1)
+    return jax.lax.cond(
+        stop_after_forward,
+        lambda est: _finish_norm_estimation(est.state),
+        choose_next_test_vectors,
+        forward_estimate,
+    )
+
+
+def _block_onenorm_power_iteration_step(
+    step: Int[Array, ""],
+    state: _Block1NormEstimatorState,
+    *,
+    matvec_batch: _BatchedMatvec,
+    matvec_batch_adjoint: _BatchedMatvec,
+    max_steps: int,
+) -> _Block1NormEstimatorState:
+    """Run one guarded step of the block 1-norm power iteration."""
+    estimate_from_test_vectors = partial(
+        _estimate_onenorm_from_test_vectors,
+        step=step,
+        matvec_batch=matvec_batch,
+        matvec_batch_adjoint=matvec_batch_adjoint,
+        max_steps=max_steps,
+    )
+    return jax.lax.cond(
+        state.done,
+        lambda state: state,
+        estimate_from_test_vectors,
+        state,
+    )
+
+
+def _materialize_operator(
+    matvec_batch: _BatchedMatvec,
+    v: Inexact[Array, " dim"],
+) -> Inexact[Array, "dim dim"]:
+    """Materialize the operator defined by a batched matvec and a vector."""
+    basis_vecs = jnp.eye(v.size, dtype=v.dtype)
+    return matvec_batch(basis_vecs).T
+
+
+def _onenorm_exact(
+    matvec_batch: _BatchedMatvec, v: Inexact[Array, " dim"]
+) -> _RealScalar:
+    """Compute the exact operator 1-norm by materializing the operator."""
+    mat = _materialize_operator(matvec_batch, v)
+    return jnp.linalg.matrix_norm(mat, ord=1)
+
+
+def _onenormest(
+    block_size: int,
+    max_steps: int,
+    estimator_cost: int,
+) -> Callable[..., _RealScalar]:
+    """Return an estimator that switches between exact and block power iteration."""
+
+    def estimate_norm(
+        matvec: Callable[..., _PyTreeVector],
+        v_like: _PyTreeVector,
+        key: PRNGKeyArray,
+        *parameters: Any,
+    ) -> _RealScalar:
         flat_like, unravel = _validate_vector_space(v_like)
         size = flat_like.size
-        if block_size >= size:
-            raise ValueError(
-                "block_size must be smaller than the vector-space dimension"
-            )
 
-        adjoint = _linear_adjoint(matvec, v_like)
+        def matvec_flat(
+            vector: Inexact[Array, " dim"],
+        ) -> Inexact[Array, " dim"]:
+            return ravel_pytree(matvec(unravel(vector), *parameters))[0]
 
-        def apply(block):
-            def apply_one(vector):
-                result = matvec(unravel(vector), *parameters)
-                flat_result, _ = ravel_pytree(result)
-                return flat_result
+        matvec_batch = jax.vmap(matvec_flat)
 
-            return jax.vmap(apply_one)(block)
+        if size <= estimator_cost:
+            return _onenorm_exact(matvec_batch, flat_like)
 
-        def apply_adjoint(block):
-            def apply_one(vector):
-                result = adjoint(unravel(vector), *parameters)
-                flat_result, _ = ravel_pytree(result)
-                return flat_result
-
-            return jax.vmap(apply_one)(block)
-
-        key, block = _initial_block(key, size, block_size, flat_like.dtype)
-        real_dtype = jnp.real(flat_like).dtype
-        estimate = jnp.zeros((), dtype=real_dtype)
-        previous_signs = jnp.zeros_like(block)
-        indices = jnp.zeros((block_size,), dtype=jnp.int32)
-        visited = jnp.zeros((size,), dtype=bool)
-        done = jnp.array(False)
-
-        def iteration(step, state):
-            done = state[-1]
-
-            def active_iteration(state):
-                (
-                    block,
-                    estimate,
-                    previous_signs,
-                    indices,
-                    visited,
-                    key,
-                    _,
-                ) = state
-                image = apply(block)
-                column_norms = jnp.sum(jnp.abs(image), axis=-1)
-                candidate = jnp.max(column_norms)
-                no_improvement = (step > 0) & (candidate <= estimate)
-
-                def stop_without_adjoint(_):
-                    return (
-                        block,
-                        estimate,
-                        previous_signs,
-                        indices,
-                        visited,
-                        key,
-                        jnp.array(True),
-                    )
-
-                def continue_iteration(_):
-                    next_estimate = jnp.maximum(estimate, candidate)
-
-                    def stop_after_final_forward(_):
-                        return (
-                            block,
-                            next_estimate,
-                            previous_signs,
-                            indices,
-                            visited,
-                            key,
-                            jnp.array(True),
-                        )
-
-                    def process_signs(_):
-                        best_column = jnp.argmax(column_norms)
-                        best_index = indices[best_column]
-                        signs = _sign_round_up(image)
-                        signs_repeated = (step > 0) & _all_columns_parallel(
-                            signs, previous_signs
-                        )
-
-                        def stop_on_repeated_signs(_):
-                            return (
-                                block,
-                                next_estimate,
-                                previous_signs,
-                                indices,
-                                visited,
-                                key,
-                                jnp.array(True),
-                            )
-
-                        def continue_with_adjoint(_):
-                            next_key, signs_unique = _resample_parallel_columns(
-                                key, signs, previous_signs
-                            )
-                            adjoint_image = apply_adjoint(signs_unique)
-                            row_norms = jnp.max(jnp.abs(adjoint_image), axis=0)
-                            ranked = jnp.argsort(-row_norms, stable=True)
-                            repeated_best = (step > 0) & jnp.isclose(
-                                jnp.max(row_norms), row_norms[best_index]
-                            )
-                            top_already_visited = jnp.all(visited[ranked[:block_size]])
-                            should_stop = repeated_best | top_already_visited
-
-                            ranked_visited = visited[ranked]
-                            unseen_first = jnp.argsort(ranked_visited, stable=True)
-                            selected = ranked[unseen_first[:block_size]].astype(
-                                indices.dtype
-                            )
-                            next_block = jax.nn.one_hot(
-                                selected, size, dtype=flat_like.dtype
-                            )
-                            next_visited = visited.at[selected].set(True)
-                            return (
-                                next_block,
-                                next_estimate,
-                                signs_unique,
-                                selected,
-                                next_visited,
-                                next_key,
-                                should_stop,
-                            )
-
-                        return jax.lax.cond(
-                            signs_repeated,
-                            stop_on_repeated_signs,
-                            continue_with_adjoint,
-                            operand=None,
-                        )
-
-                    return jax.lax.cond(
-                        step == max_steps - 1,
-                        stop_after_final_forward,
-                        process_signs,
-                        operand=None,
-                    )
-
-                return jax.lax.cond(
-                    no_improvement,
-                    stop_without_adjoint,
-                    continue_iteration,
-                    operand=None,
-                )
-
-            return jax.lax.cond(done, lambda state: state, active_iteration, state)
-
-        state = (
-            block,
-            estimate,
-            previous_signs,
-            indices,
-            visited,
-            key,
-            done,
+        matvec_flat_adjoint = _linear_adjoint(matvec_flat, flat_like)
+        matvec_batch_adjoint = jax.vmap(
+            lambda result_probe: matvec_flat_adjoint(result_probe)[0]
         )
-        _, estimate, _, _, _, _, _ = jax.lax.fori_loop(0, max_steps, iteration, state)
-        return jax.lax.stop_gradient(jnp.maximum(estimate, 0))
+
+        real_dtype = jnp.real(flat_like).dtype
+
+        initial_key, resample_key = jax.random.split(key)
+
+        test_vectors = _initial_block(
+            initial_key,
+            size,
+            block_size,
+            flat_like.dtype,
+        )
+        state = _Block1NormEstimatorState(
+            test_vectors=test_vectors,
+            estimate=jnp.zeros((), dtype=real_dtype),
+            previous_result_probes=jnp.zeros_like(test_vectors),
+            test_vector_indices=jnp.zeros((block_size,), dtype=jnp.int32),
+            visited_basis_indices=jnp.zeros((size,), dtype=bool),
+            key=resample_key,
+            done=jnp.array(False),
+        )
+        power_iteration_step = partial(
+            _block_onenorm_power_iteration_step,
+            matvec_batch=matvec_batch,
+            matvec_batch_adjoint=matvec_batch_adjoint,
+            max_steps=max_steps,
+        )
+        state = jax.lax.fori_loop(0, max_steps, power_iteration_step, state)
+        return state.estimate
 
     return estimate_norm

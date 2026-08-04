@@ -12,7 +12,6 @@ from expax._operator import _validate_vector_space
 from expax._planning import (
     _build_operator_plan,
     _default_trace_estimator,
-    _exact_1_norm_estimator,
     _make_selector,
 )
 from expax._taylor import _taylor_action
@@ -55,9 +54,10 @@ def expm_multiply(
             calling convention as ``trace_estimator`` and estimates the operator
             1-norm; ``cost`` models its work in scalar ``matvec`` equivalents for
             the planning criterion. ``None`` selects
-            :func:`expax.normest.onenormest`, whose model is four applications per
-            block column, when the dimension permits it and exact basis actions for
-            dimensions one and two.
+            :func:`expax.normest.onenormest`, whose ``4 * block_size`` model is
+            approximately four batches of ``block_size`` parallel applications,
+            and which evaluates every basis vector exactly whenever the dimension
+            does not exceed that cost.
         max_degree: Maximum Taylor degree, between 1 and 55.
         max_scaling: Optional upper bound on a selected scaling count. An action
             whose plan exceeds the bound returns NaN leaves without entering its
@@ -88,11 +88,7 @@ def expm_multiply(
     )
     flat_like, _ = _validate_vector_space(v_like)
     if norm_estimator is None:
-        norm_estimator = (
-            (_exact_1_norm_estimator, flat_like.size)
-            if flat_like.size < 3
-            else onenormest()
-        )
+        norm_estimator = onenormest()
     tolerance = _resolve_tolerance(flat_like.dtype, tol)
     planned_times = None if times is None else _validate_times(times, algorithm)
     theta = _theta(flat_like.dtype, tolerance, max_degree)

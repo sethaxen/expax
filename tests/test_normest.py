@@ -3,48 +3,281 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from jax.flatten_util import ravel_pytree
+from jaxtyping import Array, Inexact, PyTree, Real
 
 import expax
 
 
-def _dense_matvec(x, matrix):
+def _dense_matvec(
+    x: Inexact[Array, " dim"],
+    matrix: Inexact[Array, "dim dim"],
+) -> Inexact[Array, " dim"]:
     return matrix @ x
 
 
-def test_onenormest_reports_code_fragment_3_1_cost():
+def test_sign_vectors_to_resample_prioritizes_earlier_current_vectors() -> None:
+    block = jnp.array(
+        [
+            [1.0, 1.0, 1.0, 1.0],
+            [-1.0, -1.0, -1.0, -1.0],
+            [1.0, -1.0, 1.0, -1.0],
+        ]
+    )
+    previous = block[2:]
+
+    received = jax.jit(expax.normest._sign_vectors_to_resample)(block, previous)
+
+    np.testing.assert_array_equal(received, [False, True, True])
+
+
+def test_complex_result_probes_go_directly_to_adjoint() -> None:
+    adjoint_calls = []
+    result_vectors = jnp.array([[1.0, 1j, -1.0, -1j]], dtype=jnp.complex64)
+    key = jax.random.key(0)
+
+    def record(vectors: Inexact[np.ndarray, "block dim"]) -> None:
+        adjoint_calls.append(np.asarray(vectors))
+
+    def matvec_batch_adjoint(
+        vectors: Inexact[Array, "block dim"],
+    ) -> Inexact[Array, "block dim"]:
+        jax.debug.callback(record, vectors)
+        return vectors
+
+    state = expax.normest._Block1NormEstimatorState(
+        test_vectors=jnp.ones_like(result_vectors),
+        estimate=jnp.array(0.0),
+        previous_result_probes=result_vectors,
+        test_vector_indices=jnp.zeros((1,), dtype=jnp.int32),
+        visited_basis_indices=jnp.zeros((4,), dtype=bool),
+        key=key,
+        done=jnp.array(False),
+    )
+    forward_estimate = expax.normest._ForwardNormEstimate(
+        step=jnp.array(1),
+        state=state,
+        result_vectors=result_vectors,
+        result_onenorms=jnp.array([4.0]),
+    )
+    received = jax.jit(
+        lambda estimate: expax.normest._choose_next_test_vectors(
+            estimate,
+            matvec_batch_adjoint=matvec_batch_adjoint,
+        )
+    )(forward_estimate)
+    jax.block_until_ready(received.estimate)
+
+    assert len(adjoint_calls) == 1
+    np.testing.assert_array_equal(adjoint_calls[0], result_vectors)
+    np.testing.assert_array_equal(
+        jax.random.key_data(received.key),
+        jax.random.key_data(key),
+    )
+
+
+def test_all_parallel_real_result_probes_do_not_resample() -> None:
+    adjoint_calls = []
+    key = jax.random.key(0)
+    result_vectors = jnp.array([[1.0, 1.0, 1.0, 1.0], [1.0, -1.0, 1.0, -1.0]])
+
+    def record(vectors: Inexact[np.ndarray, "block dim"]) -> None:
+        adjoint_calls.append(np.asarray(vectors))
+
+    def matvec_batch_adjoint(
+        vectors: Inexact[Array, "block dim"],
+    ) -> Inexact[Array, "block dim"]:
+        jax.debug.callback(record, vectors)
+        return vectors
+
+    state = expax.normest._Block1NormEstimatorState(
+        test_vectors=jnp.ones_like(result_vectors),
+        estimate=jnp.array(0.0),
+        previous_result_probes=result_vectors,
+        test_vector_indices=jnp.zeros((2,), dtype=jnp.int32),
+        visited_basis_indices=jnp.zeros((4,), dtype=bool),
+        key=key,
+        done=jnp.array(False),
+    )
+    forward_estimate = expax.normest._ForwardNormEstimate(
+        step=jnp.array(1),
+        state=state,
+        result_vectors=result_vectors,
+        result_onenorms=jnp.ones((2,)),
+    )
+
+    def choose_next_test_vectors(estimate):
+        return expax.normest._choose_next_test_vectors(
+            estimate,
+            matvec_batch_adjoint=matvec_batch_adjoint,
+        )
+
+    jaxpr = jax.make_jaxpr(choose_next_test_vectors)(forward_estimate).jaxpr
+    received = jax.jit(choose_next_test_vectors)(forward_estimate)
+    jax.block_until_ready(received.done)
+
+    assert not any(eqn.primitive.name == "while" for eqn in jaxpr.eqns)
+    assert bool(received.done)
+    assert not adjoint_calls
+    np.testing.assert_array_equal(
+        jax.random.key_data(received.key),
+        jax.random.key_data(key),
+    )
+
+
+def test_continuing_real_iteration_uses_resampled_result_probes() -> None:
+    key = jax.random.key(0)
+    result_vectors = jnp.array([[1.0, 1.0, 1.0, 1.0], [1.0, -1.0, 1.0, -1.0]])
+    previous_result_probes = jnp.array([[1.0, 1.0, 1.0, 1.0], [1.0, 1.0, -1.0, -1.0]])
+    state = expax.normest._Block1NormEstimatorState(
+        test_vectors=jnp.ones_like(result_vectors),
+        estimate=jnp.array(0.0),
+        previous_result_probes=previous_result_probes,
+        test_vector_indices=jnp.zeros((2,), dtype=jnp.int32),
+        visited_basis_indices=jnp.zeros((4,), dtype=bool),
+        key=key,
+        done=jnp.array(False),
+    )
+    forward_estimate = expax.normest._ForwardNormEstimate(
+        step=jnp.array(1),
+        state=state,
+        result_vectors=result_vectors,
+        result_onenorms=jnp.ones((2,)),
+    )
+
+    received = jax.jit(
+        lambda estimate: expax.normest._choose_next_test_vectors(
+            estimate,
+            matvec_batch_adjoint=lambda vectors: vectors,
+        )
+    )(forward_estimate)
+
+    needs_resampling = expax.normest._sign_vectors_to_resample(
+        received.previous_result_probes,
+        previous_result_probes,
+    )
+    assert not bool(jnp.any(needs_resampling))
+    assert not bool(
+        jnp.array_equal(
+            jax.random.key_data(received.key),
+            jax.random.key_data(key),
+        )
+    )
+
+
+def test_resample_parallel_sign_vectors_uses_one_block_retry_loop() -> None:
+    block = jnp.ones((2, 3))
+    previous = jnp.array([[1.0, -1.0, 1.0], [1.0, 1.0, -1.0]])
+
+    jaxpr = jax.make_jaxpr(expax.normest._resample_parallel_sign_vectors)(
+        jax.random.key(0), block, previous
+    ).jaxpr
+
+    assert sum(eqn.primitive.name == "while" for eqn in jaxpr.eqns) == 1
+
+
+def test_resample_parallel_sign_vectors_removes_all_conflicts_at_min_dimension() -> (
+    None
+):
+    previous = jnp.array([[1.0, 1.0, 1.0], [1.0, -1.0, 1.0]])
+
+    received = jax.jit(expax.normest._resample_parallel_sign_vectors)(
+        jax.random.key(0), previous, previous
+    )
+
+    needs_resampling = expax.normest._sign_vectors_to_resample(received, previous)
+    assert not bool(jnp.any(needs_resampling))
+
+
+def test_initial_block_is_normalized_and_has_no_parallel_sign_vectors() -> None:
+    received = jax.jit(expax.normest._initial_block, static_argnums=(1, 2, 3))(
+        jax.random.key(0), 4, 3, jnp.float32
+    )
+
+    np.testing.assert_array_equal(received[0], jnp.full(4, 0.25))
+    unscaled = received * received.shape[-1]
+    previous = jnp.empty((0, received.shape[-1]), dtype=received.dtype)
+    needs_resampling = expax.normest._sign_vectors_to_resample(unscaled, previous)
+    assert not bool(jnp.any(needs_resampling))
+
+
+def test_initial_block_resamples_parallel_real_vectors_stored_as_complex() -> None:
+    received = expax.normest._initial_block(
+        jax.random.key(4),
+        3,
+        2,
+        jnp.complex64,
+    )
+
+    unscaled = received * received.shape[-1]
+    assert not bool(
+        expax.normest._parallel_sign_vectors(unscaled[:1], unscaled[1:])[0, 0]
+    )
+
+
+def test_onenormest_reports_code_fragment_3_1_cost() -> None:
     _, cost = expax.normest.onenormest(block_size=3)
 
     assert cost == 12
 
 
 @pytest.mark.parametrize("seed", range(4))
-def test_onenormest_is_exact_for_diagonal_operators(seed):
-    matrix = jnp.diag(jnp.array([-2.0, 7.0, 1.0, -4.0]))
+def test_onenormest_is_exact_for_diagonal_operators_above_its_cost(seed: int) -> None:
+    matrix = jnp.diag(jnp.array([-2.0, 7.0, 1.0, -4.0, 3.0, -6.0, 5.0, 2.0, -1.0]))
     estimate, _ = expax.normest.onenormest(block_size=2)
 
-    received = estimate(_dense_matvec, jnp.zeros(4), jax.random.key(seed), matrix)
+    received = estimate(_dense_matvec, jnp.zeros(9), jax.random.key(seed), matrix)
 
     np.testing.assert_allclose(received, 7.0)
 
 
+def test_onenormest_exact_estimate_is_differentiable() -> None:
+    matrix = jnp.array([[1.0, 2.0], [3.0, -5.0]])
+    estimate, _ = expax.normest.onenormest(block_size=2)
+
+    def objective(matrix):
+        return estimate(_dense_matvec, jnp.zeros(2), jax.random.key(0), matrix)
+
+    received = jax.jit(jax.grad(objective))(matrix)
+    expected = jnp.array([[0.0, 1.0], [0.0, -1.0]])
+
+    np.testing.assert_array_equal(received, expected)
+
+
+def test_onenormest_stochastic_estimate_is_differentiable() -> None:
+    diagonal = jnp.arange(1.0, 10.0)
+    estimate, _ = expax.normest.onenormest(block_size=2)
+
+    def objective(diagonal):
+        matrix = jnp.diag(diagonal)
+        return estimate(_dense_matvec, jnp.zeros(9), jax.random.key(0), matrix)
+
+    received = jax.jit(jax.grad(objective))(diagonal)
+    expected = jax.nn.one_hot(8, 9)
+
+    np.testing.assert_array_equal(received, expected)
+
+
 @pytest.mark.parametrize("seed", range(4))
-def test_onenormest_bounds_complex_nonnormal_operator(seed):
-    matrix = jnp.array(
-        [
-            [1 + 2j, 8 - 3j, 0, 1j],
-            [0, -2j, 5 + 4j, 0],
-            [3, 0, -1 + 1j, 6],
-            [0, 2 - 1j, 0, 4j],
-        ],
-        dtype=jnp.complex128,
+def test_onenormest_bounds_complex_nonnormal_operator_above_its_cost(seed: int) -> None:
+    matrix = jnp.pad(
+        jnp.array(
+            [
+                [1 + 2j, 8 - 3j, 0, 1j],
+                [0, -2j, 5 + 4j, 0],
+                [3, 0, -1 + 1j, 6],
+                [0, 2 - 1j, 0, 4j],
+            ],
+            dtype=jnp.complex128,
+        ),
+        ((0, 5), (0, 5)),
     )
-    exact = np.linalg.norm(np.asarray(matrix), ord=1)
+    exact = np.linalg.matrix_norm(np.asarray(matrix), ord=1)
     estimate, _ = expax.normest.onenormest(block_size=2)
 
     received = float(
         estimate(
             _dense_matvec,
-            jnp.zeros(4, dtype=jnp.complex128),
+            jnp.zeros(9, dtype=jnp.complex128),
             jax.random.key(seed),
             matrix,
         )
@@ -53,14 +286,21 @@ def test_onenormest_bounds_complex_nonnormal_operator(seed):
     assert exact / 3 <= received <= exact
 
 
-def test_onenormest_accepts_parameterized_pytree_operators():
+def test_onenormest_accepts_parameterized_pytree_operators_above_its_cost() -> None:
     v_like = {
-        "left": jnp.zeros(2, dtype=jnp.float64),
-        "right": jnp.zeros(1, dtype=jnp.float64),
+        "left": jnp.zeros(5, dtype=jnp.float64),
+        "right": jnp.zeros(4, dtype=jnp.float64),
     }
-    matrix = jnp.array([[2.0, -1.0, 0.0], [0.0, 3.0, 4.0], [1.0, 0.0, -2.0]])
+    matrix = jnp.pad(
+        jnp.array([[2.0, -1.0, 0.0], [0.0, 3.0, 4.0], [1.0, 0.0, -2.0]]),
+        ((0, 6), (0, 6)),
+    )
 
-    def matvec(x, scale, matrix):
+    def matvec(
+        x: PyTree[Inexact[Array, "..."]],
+        scale: Real[Array, ""],
+        matrix: Inexact[Array, "dim dim"],
+    ) -> PyTree[Inexact[Array, "..."]]:
         flat, unravel = ravel_pytree(x)
         return unravel(scale * (matrix @ flat))
 
@@ -73,72 +313,173 @@ def test_onenormest_accepts_parameterized_pytree_operators():
         jax.random.key(12),
     )
 
-    exact = 2.0 * np.linalg.norm(np.asarray(matrix), ord=1)
+    exact = 2.0 * np.linalg.matrix_norm(np.asarray(matrix), ord=1)
     assert exact / 3 <= float(received) <= exact
 
 
-def test_onenormest_handles_operator_powers_without_changing_its_cost():
-    matrix = jnp.array([[2.0, 1.0, 0.0], [0.0, -1.0, 3.0], [1.0, 0.0, 2.0]])
+def test_onenormest_handles_operator_powers_above_its_cost_without_changing_cost() -> (
+    None
+):
+    matrix = jnp.pad(
+        jnp.array([[2.0, 1.0, 0.0], [0.0, -1.0, 3.0], [1.0, 0.0, 2.0]]),
+        ((0, 6), (0, 6)),
+    )
     power = 3
 
-    def powered_matvec(x, matrix):
+    def powered_matvec(
+        x: Inexact[Array, " dim"],
+        matrix: Inexact[Array, "dim dim"],
+    ) -> Inexact[Array, " dim"]:
         for _ in range(power):
             x = matrix @ x
         return x
 
     estimate, cost = expax.normest.onenormest(block_size=2)
-    received = estimate(powered_matvec, jnp.zeros(3), jax.random.key(5), matrix)
+    received = estimate(powered_matvec, jnp.zeros(9), jax.random.key(5), matrix)
 
-    exact = np.linalg.norm(np.linalg.matrix_power(np.asarray(matrix), power), ord=1)
+    exact = np.linalg.matrix_norm(
+        np.linalg.matrix_power(np.asarray(matrix), power), ord=1
+    )
     assert exact / 3 <= float(received) <= exact
     assert power * cost == 24
 
 
-def test_onenormest_skips_adjoint_on_final_step(monkeypatch):
-    matrix = jnp.array(
-        [
-            [-0.98128909, 0.03826571, -0.9366923, -0.69846063, -0.29595587, 0.31419297],
-            [0.63443117, -1.08491685, 0.25676977, 0.47592282, 0.85303157, -0.16485969],
-            [1.04476288, 1.53548419, 0.44388999, -0.70602427, -1.39838878, 0.33018547],
-            [-1.73440706, 0.72005797, 0.56592782, -0.79026839, -0.11883412, 0.7663085],
-            [
-                -0.48582007,
-                0.56101067,
-                -0.30619089,
-                -0.27750305,
-                -0.56399731,
-                -1.92742072,
-            ],
-            [-1.9018335, 0.86788021, -0.34433705, 1.53220957, -0.63933366, 1.56270841],
-        ]
-    )
+def test_estimate_onenorm_from_test_vectors_uses_adjoint_before_final_step() -> None:
     adjoint_calls = []
 
-    def record(_):
-        adjoint_calls.append(None)
+    def record(result_probes: Inexact[np.ndarray, "block dim"]) -> None:
+        adjoint_calls.append(np.asarray(result_probes))
 
-    def instrumented_adjoint(_matvec, _v_like):
-        def adjoint(vector, matrix):
-            jax.debug.callback(record, vector[0])
-            return matrix.T @ vector
+    def matvec_batch_adjoint(
+        result_probes: Inexact[Array, "block dim"],
+    ) -> Inexact[Array, "block dim"]:
+        jax.debug.callback(record, result_probes)
+        return result_probes
 
-        return adjoint
+    state = expax.normest._Block1NormEstimatorState(
+        test_vectors=jnp.ones((2, 3)),
+        estimate=jnp.array(0.0),
+        previous_result_probes=jnp.zeros((2, 3)),
+        test_vector_indices=jnp.zeros((2,), dtype=jnp.int32),
+        visited_basis_indices=jnp.zeros((3,), dtype=bool),
+        key=jax.random.key(0),
+        done=jnp.array(False),
+    )
+    estimate_before_final_step = jax.jit(
+        lambda state: expax.normest._estimate_onenorm_from_test_vectors(
+            state,
+            step=jnp.array(0),
+            matvec_batch=lambda test_vectors: test_vectors,
+            matvec_batch_adjoint=matvec_batch_adjoint,
+            max_steps=2,
+        )
+    )
 
-    monkeypatch.setattr(expax.normest, "_linear_adjoint", instrumented_adjoint)
-    estimate, _ = expax.normest.onenormest(block_size=2, max_steps=2)
-    received = jax.jit(lambda key: estimate(_dense_matvec, jnp.zeros(6), key, matrix))(
+    received = estimate_before_final_step(state)
+    jax.block_until_ready(received.estimate)
+
+    assert [call.shape for call in adjoint_calls] == [(2, 3)]
+
+
+def test_estimate_onenorm_from_test_vectors_skips_adjoint_on_final_step() -> None:
+    adjoint_calls = []
+
+    def record(result_probes: Inexact[np.ndarray, "block dim"]) -> None:
+        adjoint_calls.append(np.asarray(result_probes))
+
+    def matvec_batch_adjoint(
+        result_probes: Inexact[Array, "block dim"],
+    ) -> Inexact[Array, "block dim"]:
+        jax.debug.callback(record, result_probes)
+        return result_probes
+
+    state = expax.normest._Block1NormEstimatorState(
+        test_vectors=jnp.ones((2, 3)),
+        estimate=jnp.array(0.0),
+        previous_result_probes=jnp.zeros((2, 3)),
+        test_vector_indices=jnp.zeros((2,), dtype=jnp.int32),
+        visited_basis_indices=jnp.zeros((3,), dtype=bool),
+        key=jax.random.key(0),
+        done=jnp.array(False),
+    )
+    estimate_on_final_step = jax.jit(
+        lambda state: expax.normest._estimate_onenorm_from_test_vectors(
+            state,
+            step=jnp.array(1),
+            matvec_batch=lambda test_vectors: test_vectors,
+            matvec_batch_adjoint=matvec_batch_adjoint,
+            max_steps=2,
+        )
+    )
+
+    received = estimate_on_final_step(state)
+    jax.block_until_ready(received.estimate)
+
+    assert not adjoint_calls
+    assert bool(received.done)
+
+
+def test_onenormest_evaluates_below_cost_operators_exactly_under_jit() -> None:
+    matrix = jnp.pad(
+        jnp.array([[1.0, 4.0, 0.0], [2.0, -5.0, 0.0], [3.0, 2.0, 1.0]]),
+        ((0, 4), (0, 4)),
+    )
+    estimate, _ = expax.normest.onenormest(block_size=2)
+
+    received = jax.jit(lambda key: estimate(_dense_matvec, jnp.zeros(7), key, matrix))(
         jax.random.key(0)
     )
-    jax.block_until_ready(received)
 
-    assert len(adjoint_calls) == 2
+    np.testing.assert_allclose(received, 11.0)
 
 
-def test_onenormest_does_not_materialize_small_operators():
-    estimate, _ = expax.normest.onenormest(block_size=3)
+def test_onenormest_evaluates_exactly_when_block_size_equals_dimension() -> None:
+    matrix = jnp.array([[1.0, 4.0], [2.0, -5.0]])
+    estimate, _ = expax.normest.onenormest(block_size=2)
 
-    with pytest.raises(ValueError, match="block_size"):
-        estimate(_dense_matvec, jnp.zeros(3), jax.random.key(0), jnp.eye(3))
+    received = jax.jit(lambda key: estimate(_dense_matvec, jnp.zeros(2), key, matrix))(
+        jax.random.key(0)
+    )
+
+    np.testing.assert_allclose(received, 9.0)
+
+
+def test_onenormest_evaluates_cost_sized_operators_exactly_under_jit() -> None:
+    matrix = jnp.pad(
+        jnp.array([[1.0, 4.0, 0.0], [2.0, -5.0, 0.0], [3.0, 2.0, 1.0]]),
+        ((0, 5), (0, 5)),
+    )
+    estimate, _ = expax.normest.onenormest(block_size=2)
+
+    received = jax.jit(lambda key: estimate(_dense_matvec, jnp.zeros(8), key, matrix))(
+        jax.random.key(0)
+    )
+
+    np.testing.assert_allclose(received, 11.0)
+
+
+def test_onenormest_exact_dispatch_avoids_constructing_an_adjoint() -> None:
+    def forward_only_matvec(
+        vector: Inexact[Array, " dim"],
+    ) -> Inexact[Array, " dim"]:
+        return jax.pure_callback(
+            lambda value: value,
+            jax.ShapeDtypeStruct(vector.shape, vector.dtype),
+            vector,
+            vmap_method="sequential",
+        )
+
+    estimate, _ = expax.normest.onenormest(block_size=2)
+
+    received = jax.jit(lambda key: estimate(forward_only_matvec, jnp.zeros(8), key))(
+        jax.random.key(0)
+    )
+
+    np.testing.assert_allclose(received, 1.0)
+    with pytest.raises(ValueError, match="Pure callbacks do not support transpose"):
+        jax.jit(lambda key: estimate(forward_only_matvec, jnp.zeros(9), key))(
+            jax.random.key(0)
+        )
 
 
 @pytest.mark.parametrize(
@@ -148,6 +489,8 @@ def test_onenormest_does_not_materialize_small_operators():
         ({"max_steps": 1}, "max_steps"),
     ],
 )
-def test_onenormest_rejects_invalid_static_configuration(kwargs, message):
+def test_onenormest_rejects_invalid_static_configuration(
+    kwargs: dict[str, int], message: str
+) -> None:
     with pytest.raises(ValueError, match=message):
         expax.normest.onenormest(**kwargs)

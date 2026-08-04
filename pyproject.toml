@@ -14,6 +14,7 @@ authors = [
 ]
 dependencies = [
     "jax>=0.4.38",
+    "jaxtyping",
     "matfree>=0.6,<0.7",
 ]
 
@@ -30,6 +31,7 @@ docs = [
     "furo",
     "myst-parser",
     "sphinx>=8",
+    "sphinx-autodoc2",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -48,4 +50,5 @@ line-length = 88
 target-version = "py311"
 
 [tool.ruff.lint]
+ignore = ["F722"]
 select = ["B", "E", "F", "I", "RUF", "UP"]
