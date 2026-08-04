@@ -329,7 +329,7 @@ def _compute_theta_roots_from_arb(
             return 1
         raise ArithmeticError(
             "Arb enclosure cannot classify a root bracket endpoint; "
-            "increase precision_bits"
+            "increase accuracy_bits"
         )
 
     for polynomial in polynomials:
