@@ -9,8 +9,13 @@ https://github.com/higham/expmv/blob/779f27e81afba16b9b2454ef0460ecf7bad23988/li
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Any, TypeAlias
 
+import ml_dtypes
+import mpmath as mp
+import numpy as np
 import sympy as sp
 
 DEFAULT_MAX_DEGREE = 55
@@ -20,6 +25,8 @@ VERIFY_SERIES_DEGREE = 400
 VERIFY_PRECISION_BITS = 1024
 AUTHORITATIVE_SERIES_DEGREE = 800
 AUTHORITATIVE_PRECISION_BITS = 2048
+ROOT_DECIMAL_DIGITS = 170
+MPFloat: TypeAlias = Any
 
 
 def _require_rational(value: object) -> sp.Rational:
@@ -96,3 +103,133 @@ def build_majorants(
             tuple(_require_rational(abs(value)) for value in coefficients[1:])
         )
     return tuple(majorants)
+
+
+@dataclass(frozen=True)
+class PrecisionMode:
+    name: str
+    scalar_type: type[Any]
+    tolerance: sp.Rational
+    complex_type: str | None
+
+
+NATIVE_MODES = (
+    PrecisionMode(
+        "float16", np.float16, _require_rational(sp.Rational(1, 2**11)), None
+    ),
+    PrecisionMode(
+        "bfloat16", ml_dtypes.bfloat16, _require_rational(sp.Rational(1, 2**8)), None
+    ),
+    PrecisionMode(
+        "float32",
+        np.float32,
+        _require_rational(sp.Rational(1, 2**24)),
+        "complex64",
+    ),
+    PrecisionMode(
+        "float64",
+        np.float64,
+        _require_rational(sp.Rational(1, 2**53)),
+        "complex128",
+    ),
+)
+EXPMV_HALF_MODE = PrecisionMode(
+    "float16-expmv-tolerance",
+    np.float16,
+    _require_rational(sp.Rational(1, 2**10)),
+    None,
+)
+
+
+def _as_mpf_rational(value: sp.Rational) -> MPFloat:
+    return mp.mpf(int(value.p)) / int(value.q)
+
+
+def _evaluate_majorant(
+    x: MPFloat,
+    coefficients: Sequence[MPFloat],
+) -> MPFloat:
+    value = mp.mpf(0)
+    for coefficient in reversed(coefficients):
+        value = value * x + coefficient
+    return value
+
+
+def compute_theta_roots(
+    tolerance: sp.Rational,
+    majorants: Sequence[Sequence[sp.Rational]],
+    precision_bits: int,
+) -> tuple[MPFloat, ...]:
+    """Return safe lower endpoints of high-precision theta root brackets."""
+    if tolerance <= 0:
+        raise ValueError("tolerance must be positive")
+    if precision_bits < 64:
+        raise ValueError("precision_bits must be at least 64")
+    roots = []
+    with mp.workprec(precision_bits):
+        target = _as_mpf_rational(tolerance)
+        lower = mp.mpf(0)
+        for degree, coefficients in enumerate(majorants, start=1):
+            numeric_coefficients = tuple(
+                _as_mpf_rational(coefficient) for coefficient in coefficients
+            )
+            upper = mp.root(target * math.factorial(degree + 1), degree)
+            while _evaluate_majorant(upper, numeric_coefficients) <= target:
+                upper *= 2
+            if _evaluate_majorant(lower, numeric_coefficients) > target:
+                raise ArithmeticError("theta sequence lost monotonicity")
+            for _ in range(precision_bits + 64):
+                midpoint = (lower + upper) / 2
+                if midpoint == lower or midpoint == upper:
+                    break
+                if _evaluate_majorant(midpoint, numeric_coefficients) <= target:
+                    lower = midpoint
+                else:
+                    upper = midpoint
+            roots.append(+lower)
+    return tuple(roots)
+
+
+def as_mpf(value: Any) -> MPFloat:
+    """Convert a supported target scalar to its exact binary value in mpmath."""
+    return mp.mpf(float(value))
+
+
+def _target_scalar(value: MPFloat, mode: PrecisionMode) -> Any:
+    text = mp.nstr(value, n=ROOT_DECIMAL_DIGITS)
+    return mode.scalar_type(text)
+
+
+def _nextafter(value: Any, target: Any, mode: PrecisionMode) -> Any:
+    source_array = np.asarray(value, dtype=mode.scalar_type)
+    target_array = np.asarray(target, dtype=mode.scalar_type)
+    return np.nextafter(source_array, target_array)[()]
+
+
+def round_down(value: MPFloat, mode: PrecisionMode) -> Any:
+    candidate = _target_scalar(value, mode)
+    if as_mpf(candidate) > value:
+        candidate = _nextafter(candidate, mode.scalar_type(0), mode)
+    if not as_mpf(candidate) <= value:
+        raise ArithmeticError("target value exceeds high-precision root")
+    if not value < as_mpf(next_up(candidate, mode)):
+        raise ArithmeticError("target value is not the greatest safe value")
+    return candidate
+
+
+def next_up(value: Any, mode: PrecisionMode) -> Any:
+    return _nextafter(value, mode.scalar_type(np.inf), mode)
+
+
+def _positive_bits(value: Any, mode: PrecisionMode) -> int:
+    dtype = np.dtype(mode.scalar_type)
+    unsigned_type = {2: np.uint16, 4: np.uint32, 8: np.uint64}[dtype.itemsize]
+    return int(np.asarray(value, dtype=dtype).view(unsigned_type).item())
+
+
+def ulp_distance(left: Any, right: Any, mode: PrecisionMode) -> int:
+    if as_mpf(left) < 0 or as_mpf(right) < 0:
+        raise ValueError(
+            "ULP distance is defined here only for nonnegative theta values"
+        )
+    return abs(_positive_bits(left, mode) - _positive_bits(right, mode))
