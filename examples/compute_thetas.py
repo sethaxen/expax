@@ -8,14 +8,19 @@ https://github.com/higham/expmv/blob/779f27e81afba16b9b2454ef0460ecf7bad23988/li
 
 from __future__ import annotations
 
+import hashlib
+import io
 import math
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from decimal import ROUND_HALF_EVEN, Decimal, localcontext
 from typing import Any, TypeAlias
+from urllib.request import urlopen
 
 import ml_dtypes
 import mpmath as mp
 import numpy as np
+import scipy.io
 import sympy as sp
 
 DEFAULT_MAX_DEGREE = 55
@@ -27,6 +32,10 @@ AUTHORITATIVE_SERIES_DEGREE = 800
 AUTHORITATIVE_PRECISION_BITS = 2048
 ROOT_DECIMAL_DIGITS = 170
 MPFloat: TypeAlias = Any
+EXPMV_COMMIT = "779f27e81afba16b9b2454ef0460ecf7bad23988"
+EXPMV_REPOSITORY = "https://github.com/higham/expmv"
+EXPMV_LICENSE = f"{EXPMV_REPOSITORY}/blob/{EXPMV_COMMIT}/license.txt"
+EXPMV_RAW_ROOT = f"https://raw.githubusercontent.com/higham/expmv/{EXPMV_COMMIT}"
 
 
 def _require_rational(value: object) -> sp.Rational:
@@ -233,3 +242,182 @@ def ulp_distance(left: Any, right: Any, mode: PrecisionMode) -> int:
             "ULP distance is defined here only for nonnegative theta values"
         )
     return abs(_positive_bits(left, mode) - _positive_bits(right, mode))
+
+
+@dataclass(frozen=True)
+class UpstreamSource:
+    filename: str
+    sha256: str
+    expected_length: int
+
+    @property
+    def url(self) -> str:
+        return f"{EXPMV_RAW_ROOT}/{self.filename}"
+
+
+UPSTREAM_SOURCES = {
+    "half": UpstreamSource(
+        "theta_taylor_half.mat",
+        "1d4940fda288f74f9f5a1dde7d6186990ab3157feddf0d8a0218973bab39adfd",
+        100,
+    ),
+    "single": UpstreamSource(
+        "theta_taylor_single.mat",
+        "e1fb7a81fb68fbbb08fa0f7668a014f4c973ff8ffdad1470b632578137a0723e",
+        60,
+    ),
+    "double": UpstreamSource(
+        "theta_taylor.mat",
+        "29d37b1c66d424f911b8c821190d3345ad89570c0a006a7ecb472d46e248fcac",
+        100,
+    ),
+}
+
+
+def _download(url: str) -> bytes:
+    with urlopen(url, timeout=30) as response:
+        return response.read()
+
+
+def load_upstream(
+    source: UpstreamSource,
+    *,
+    fetch: Callable[[str], bytes] | None = None,
+) -> np.ndarray:
+    payload = (fetch or _download)(source.url)
+    digest = hashlib.sha256(payload).hexdigest()
+    if digest != source.sha256:
+        raise ValueError(
+            f"SHA-256 mismatch for {source.filename}: {digest} != {source.sha256}"
+        )
+    contents = scipy.io.loadmat(io.BytesIO(payload))
+    if "theta" not in contents:
+        raise ValueError(f"{source.filename} has no theta variable")
+    raw_theta = np.asarray(contents["theta"])
+    expected_shape = (1, source.expected_length)
+    if raw_theta.shape != expected_shape:
+        raise ValueError(
+            f"expected shape {expected_shape} in {source.filename}, "
+            f"received {raw_theta.shape}"
+        )
+    theta = np.asarray(raw_theta, dtype=np.float64).ravel()
+    if not np.all(np.isfinite(theta)) or not np.all(theta > 0):
+        raise ValueError(f"{source.filename} theta values must be finite positive")
+    return theta
+
+
+@dataclass(frozen=True)
+class ComparisonRow:
+    degree: int
+    root: MPFloat
+    target: Any
+    upstream: float | None
+    upstream_target: Any | None
+    relative_difference: MPFloat | None
+    ulp_distance: int | None
+
+
+@dataclass(frozen=True)
+class Comparison:
+    label: str
+    mode: PrecisionMode
+    tolerance_match: bool
+    rows: tuple[ComparisonRow, ...]
+    exact_binary64_matches: int | None
+    target_matches: int | None
+    common_significant_digits: int | None
+
+    @property
+    def upstream_available(self) -> bool:
+        return all(row.upstream is not None for row in self.rows)
+
+
+def _round_significant(value: Decimal, digits: int) -> Decimal:
+    quantum = Decimal(1).scaleb(value.adjusted() - digits + 1)
+    return value.quantize(quantum, rounding=ROUND_HALF_EVEN)
+
+
+def _decimal_from_mpf(value: MPFloat, digits: int) -> Decimal:
+    text = mp.nstr(value, n=digits)
+    if not isinstance(text, str):
+        raise ArithmeticError(f"expected scalar decimal text, received {text!r}")
+    return Decimal(text)
+
+
+def maximum_common_significant_digits(
+    roots: Sequence[MPFloat],
+    upstream: Sequence[float],
+) -> int | None:
+    if len(roots) != len(upstream):
+        raise ValueError("computed and upstream tables must have equal lengths")
+    with localcontext() as context:
+        context.prec = 200
+        computed_decimal = [_decimal_from_mpf(value, 180) for value in roots]
+        upstream_decimal = [Decimal.from_float(float(value)) for value in upstream]
+        matching = [
+            digits
+            for digits in range(1, 18)
+            if all(
+                _round_significant(left, digits) == _round_significant(right, digits)
+                for left, right in zip(
+                    computed_decimal,
+                    upstream_decimal,
+                    strict=True,
+                )
+            )
+        ]
+    return max(matching, default=None)
+
+
+def compare_values(
+    label: str,
+    mode: PrecisionMode,
+    roots: Sequence[MPFloat],
+    upstream: Sequence[float] | None,
+    *,
+    tolerance_match: bool,
+) -> Comparison:
+    if upstream is not None and len(roots) != len(upstream):
+        raise ValueError("computed and upstream tables must have equal lengths")
+    rows = []
+    for degree, root in enumerate(roots, start=1):
+        target = round_down(root, mode)
+        reference = None if upstream is None else float(upstream[degree - 1])
+        reference_target = None
+        relative = None
+        distance = None
+        if reference is not None:
+            with mp.workprec(AUTHORITATIVE_PRECISION_BITS):
+                reference_mpf = mp.mpf(reference)
+                relative = +(abs(root - reference_mpf) / abs(reference_mpf))
+            reference_target = round_down(reference_mpf, mode)
+            distance = ulp_distance(target, reference_target, mode)
+        rows.append(
+            ComparisonRow(
+                degree,
+                root,
+                target,
+                reference,
+                reference_target,
+                relative,
+                distance,
+            )
+        )
+    if upstream is None:
+        exact_matches = target_matches = common_digits = None
+    else:
+        exact_matches = sum(
+            float(root) == float(reference)
+            for root, reference in zip(roots, upstream, strict=True)
+        )
+        target_matches = sum(row.ulp_distance == 0 for row in rows)
+        common_digits = maximum_common_significant_digits(roots, upstream)
+    return Comparison(
+        label,
+        mode,
+        tolerance_match,
+        tuple(rows),
+        exact_matches,
+        target_matches,
+        common_digits,
+    )
