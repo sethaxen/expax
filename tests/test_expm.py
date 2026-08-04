@@ -56,7 +56,7 @@ def test_expm_multiply_known_time_matches_dense_reference():
     np.testing.assert_allclose(received, expected, rtol=1e-13, atol=1e-13)
 
 
-def test_expm_multiply_parallel_times_have_leading_time_axis():
+def test_expm_multiply_multiple_times_have_leading_time_axis():
     matrix = jnp.array([[1.0, 3.0], [-2.0, 0.5]])
     vector = jnp.array([2.0, -1.0])
     times = jnp.array([0.0, 0.7, -0.4])
@@ -80,6 +80,78 @@ def test_expm_multiply_parallel_times_have_leading_time_axis():
 
     assert received.shape == (3, 2)
     np.testing.assert_allclose(received, expected, rtol=1e-13, atol=1e-13)
+
+
+def test_expm_multiply_multiple_times_support_pytree_vectors():
+    matrix = jnp.array([[1.0, 3.0], [-2.0, 0.5]])
+    vector = {"left": jnp.array([2.0]), "right": jnp.array([-1.0])}
+    flat_vector, unravel = ravel_pytree(vector)
+    times = jnp.linspace(-0.2, 0.8, 7)
+
+    def matvec(x, matrix):
+        flat, _ = ravel_pytree(x)
+        return unravel(matrix @ flat)
+
+    action = expax.expm_multiply(
+        matvec,
+        matrix,
+        times=times,
+        v_like=jax.tree.map(jnp.zeros_like, vector),
+        key=jax.random.key(0),
+        trace_estimator=_known_trace,
+        norm_estimator=(_exact_norm_estimator, 8),
+    )
+    received = action(vector)
+    received_flat = jnp.concatenate(
+        (received["left"], received["right"]),
+        axis=-1,
+    )
+    expected = np.stack(
+        [
+            scipy.linalg.expm(float(time) * np.asarray(matrix))
+            @ np.asarray(flat_vector)
+            for time in times
+        ]
+    )
+
+    np.testing.assert_allclose(received_flat, expected, rtol=1e-13, atol=1e-13)
+
+
+def test_expm_multiply_multiple_times_support_forward_mode_differentiation():
+    base = jnp.array([[0.0, 1.0], [-1.0, 0.0]])
+    vector = jnp.array([2.0, -1.0])
+    times = jnp.linspace(0.0, 1.0, 5)
+
+    def evaluate(scale):
+        action = expax.expm_multiply(
+            _dense_matvec,
+            scale * base,
+            times=times,
+            v_like=jnp.zeros_like(vector),
+            key=jax.random.key(0),
+            trace_estimator=_known_trace,
+            norm_estimator=(_exact_norm_estimator, 8),
+        )
+        return action(vector)
+
+    scale = jnp.array(0.7)
+    received, tangent = jax.jvp(evaluate, (scale,), (jnp.ones_like(scale),))
+    expected = np.stack(
+        [
+            scipy.linalg.expm(float(time * scale) * np.asarray(base))
+            @ np.asarray(vector)
+            for time in times
+        ]
+    )
+    expected_tangent = np.stack(
+        [
+            float(time) * np.asarray(base) @ value
+            for time, value in zip(times, expected, strict=True)
+        ]
+    )
+
+    np.testing.assert_allclose(received, expected, rtol=1e-13, atol=1e-13)
+    np.testing.assert_allclose(tangent, expected_tangent, rtol=1e-13, atol=1e-13)
 
 
 def test_expm_multiply_actions_vmap_over_vectors():
@@ -361,52 +433,6 @@ def test_expm_multiply_rejects_invalid_time_shapes(times):
             key=jax.random.key(0),
             trace_estimator=_known_trace,
             norm_estimator=(_exact_norm_estimator, 8),
-        )
-
-
-def test_expm_multiply_rejects_unknown_algorithm():
-    with pytest.raises(ValueError, match="algorithm"):
-        expax.expm_multiply(
-            _dense_matvec,
-            jnp.eye(3),
-            times=jnp.array(0.5),
-            v_like=jnp.zeros(3),
-            key=jax.random.key(0),
-            trace_estimator=_known_trace,
-            norm_estimator=(_exact_norm_estimator, 8),
-            algorithm="sequential",
-        )
-
-
-@pytest.mark.parametrize("times", [jnp.array(0.5), jnp.array([0.5])])
-def test_expm_multiply_time_grid_requires_an_interval(times):
-    with pytest.raises(ValueError, match="time_grid"):
-        expax.expm_multiply(
-            _dense_matvec,
-            jnp.eye(3),
-            times=times,
-            v_like=jnp.zeros(3),
-            key=jax.random.key(0),
-            trace_estimator=_known_trace,
-            norm_estimator=(_exact_norm_estimator, 8),
-            algorithm="time_grid",
-        )
-
-
-def test_expm_multiply_validates_time_grid_before_planning():
-    def fail_if_called(*_):
-        raise AssertionError("planning should not run")
-
-    with pytest.raises(ValueError, match="time_grid"):
-        expax.expm_multiply(
-            _dense_matvec,
-            jnp.eye(3),
-            times=jnp.array(0.5),
-            v_like=jnp.zeros(3),
-            key=jax.random.key(0),
-            trace_estimator=fail_if_called,
-            norm_estimator=(fail_if_called, 8),
-            algorithm="time_grid",
         )
 
 

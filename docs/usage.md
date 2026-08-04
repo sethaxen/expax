@@ -57,8 +57,8 @@ The random key belongs to planning, not application, so returned actions accept 
 
 ## Several times
 
-The default `algorithm="parallel"` accepts arbitrary time points.
-It returns a PyTree whose leaves have a leading time axis and synchronizes the runtime Taylor loops across time lanes.
+A one-dimensional time array accepts arbitrary time points.
+The result is a PyTree whose leaves have a leading time axis, and the runtime Taylor loops are synchronized across time lanes.
 
 ```python
 times = jnp.array([-0.2, 0.0, 0.7])
@@ -71,25 +71,6 @@ action = expax.expm_multiply(
 )
 trajectory = action(vector)
 ```
-
-For a one-dimensional array of equally spaced points, opt into `algorithm="time_grid"`.
-This reuses Taylor terms across grid points so can perform fewe `matvec` calls than the parallel algorithm; however, it is sequential and may be less efficient on GPU and TPU.
-
-```python
-times = jnp.linspace(0.0, 1.0, 101)
-action = expax.expm_multiply(
-    matvec,
-    matrix,
-    times=times,
-    v_like=vector,
-    key=key,
-    algorithm="time_grid",
-)
-trajectory = action(vector)
-```
-
-`time_grid` requires at least two equally spaced, finite points at runtime; invalid grids produce NaN result leaves.
-The default parallel algorithm can be faster on accelerators, so the specialized grid algorithm is opt-in.
 
 ## Estimators
 
