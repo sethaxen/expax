@@ -145,6 +145,22 @@ def test_arb_roots_match_directed_mpmath_reference():
         )
 
 
+def test_minimum_accuracy_resolves_float64_degree_one():
+    mode = next(mode for mode in compute_thetas.NATIVE_MODES if mode.name == "float64")
+    (root,) = compute_thetas.compute_theta_roots(
+        mode.tolerance,
+        compute_thetas.build_flint_majorants(1, 80),
+        64,
+    )
+
+    assert root > 0
+    predecessor = np.nextafter(np.float64(2**-52), np.float64(0))
+    assert compute_thetas.round_down(root, mode) == np.nextafter(
+        predecessor,
+        np.float64(0),
+    )
+
+
 def _mpf_as_rational(value):
     sign, mantissa, exponent, _bit_count = value._mpf_
     numerator = -mantissa if sign else mantissa
@@ -366,7 +382,7 @@ def test_render_report_contains_provenance_mappings_and_na():
             bfloat_mode,
             (mp.mpf("1.0"),),
             None,
-            tolerance_match=True,
+            tolerance_match=None,
         ),
         compute_thetas.compare_values(
             "single",
@@ -384,4 +400,5 @@ def test_render_report_contains_provenance_mappings_and_na():
     assert "complex64 -> float32" in report
     assert "complex128 -> float64" in report
     assert "N/A" in report
+    assert "| bfloat16 native | N/A |" in report
     assert "| 1 |" in report

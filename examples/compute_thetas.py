@@ -32,13 +32,13 @@ from flint import ctx as flint_ctx
 
 DEFAULT_MAX_DEGREE = 55
 DEFAULT_SERIES_DEGREE = 200
-DEFAULT_PRECISION_BITS = 256
 VERIFY_SERIES_DEGREE = 1050
-VERIFY_PRECISION_BITS = 256
 AUTHORITATIVE_SERIES_DEGREE = 1200
-AUTHORITATIVE_PRECISION_BITS = 256
-ROOT_DECIMAL_DIGITS = 170
-ROOT_BISECTION_STEPS = 128
+ROOT_ACCURACY_BITS = 128
+MIN_ROOT_ACCURACY_BITS = 64
+ARB_GUARD_BITS = 128
+COMPARISON_PRECISION_BITS = 256
+TARGET_CONVERSION_DIGITS = 40
 MPFloat: TypeAlias = Any
 FloatValues: TypeAlias = Sequence[float] | npt.NDArray[np.float64]
 EXPMV_COMMIT = "779f27e81afba16b9b2454ef0460ecf7bad23988"
@@ -270,7 +270,7 @@ def compute_theta_roots_reference(
                 upper *= 2
             if not _majorant_definitely_below(lower, upper_coefficients, target_lower):
                 lower = mp.mpf(0)
-            for _ in range(min(precision_bits + 64, ROOT_BISECTION_STEPS)):
+            for _ in range(precision_bits + 64):
                 midpoint = (lower + upper) / 2
                 if midpoint == lower or midpoint == upper:
                     break
@@ -312,14 +312,14 @@ def _arb_polynomials(
 def _compute_theta_roots_from_arb(
     tolerance: sp.Rational,
     polynomials: Sequence[Any],
-    precision_bits: int,
+    accuracy_bits: int,
 ) -> tuple[MPFloat, ...]:
     target = arb(_as_fmpq_rational(tolerance))
     target_lower = target.lower()
     target_upper = target.upper()
     lower = fmpq(0)
     exact_roots = []
-    bisection_steps = min(ROOT_BISECTION_STEPS, precision_bits // 2)
+    relative_tolerance = fmpq(1, 2**accuracy_bits)
 
     def classify(polynomial: Any, point: Any) -> int:
         value = polynomial(arb(point))
@@ -338,7 +338,7 @@ def _compute_theta_roots_from_arb(
             upper *= 2
         if classify(polynomial, lower) > 0:
             lower = fmpq(0)
-        for _ in range(bisection_steps):
+        while lower == 0 or upper - lower > lower * relative_tolerance:
             midpoint = (lower + upper) / 2
             if classify(polynomial, midpoint) < 0:
                 lower = midpoint
@@ -346,28 +346,28 @@ def _compute_theta_roots_from_arb(
                 upper = midpoint
         exact_roots.append(lower)
 
-    with mp.workprec(precision_bits):
+    with mp.workprec(accuracy_bits + ARB_GUARD_BITS):
         return tuple(+_as_mpf_fmpq(value) for value in exact_roots)
 
 
 def compute_theta_roots(
     tolerance: sp.Rational,
     majorants: Sequence[Sequence[Any]],
-    precision_bits: int,
+    accuracy_bits: int,
 ) -> tuple[MPFloat, ...]:
-    """Return safe root lower bounds using rigorous Arb enclosures."""
+    """Return root lower bounds with the requested relative accuracy."""
     if tolerance <= 0:
         raise ValueError("tolerance must be positive")
-    if precision_bits < 64:
-        raise ValueError("precision_bits must be at least 64")
+    if accuracy_bits < MIN_ROOT_ACCURACY_BITS:
+        raise ValueError(f"accuracy_bits must be at least {MIN_ROOT_ACCURACY_BITS}")
 
     old_precision = flint_ctx.prec
-    flint_ctx.prec = precision_bits
+    flint_ctx.prec = accuracy_bits + ARB_GUARD_BITS
     try:
         return _compute_theta_roots_from_arb(
             tolerance,
             _arb_polynomials(majorants),
-            precision_bits,
+            accuracy_bits,
         )
     finally:
         flint_ctx.prec = old_precision
@@ -379,7 +379,7 @@ def as_mpf(value: Any) -> MPFloat:
 
 
 def _target_scalar(value: MPFloat, mode: PrecisionMode) -> Any:
-    text = mp.nstr(value, n=ROOT_DECIMAL_DIGITS)
+    text = mp.nstr(value, n=TARGET_CONVERSION_DIGITS)
     return mode.scalar_type(text)
 
 
@@ -495,7 +495,7 @@ class ComparisonRow:
 class Comparison:
     label: str
     mode: PrecisionMode
-    tolerance_match: bool
+    tolerance_match: bool | None
     rows: tuple[ComparisonRow, ...]
     exact_binary64_matches: int | None
     target_matches: int | None
@@ -549,7 +549,7 @@ def compare_values(
     roots: Sequence[MPFloat],
     upstream: FloatValues | None,
     *,
-    tolerance_match: bool,
+    tolerance_match: bool | None,
 ) -> Comparison:
     if upstream is not None and len(upstream) < len(roots):
         raise ValueError("upstream table must contain at least as many values as roots")
@@ -564,7 +564,7 @@ def compare_values(
         relative = None
         distance = None
         if reference is not None:
-            with mp.workprec(AUTHORITATIVE_PRECISION_BITS):
+            with mp.workprec(COMPARISON_PRECISION_BITS):
                 reference_mpf = mp.mpf(reference)
                 relative = +(abs(root - reference_mpf) / abs(reference_mpf))
             reference_target = round_down(reference_mpf, mode)
@@ -614,7 +614,7 @@ def verify_root_convergence(
     fine: dict[str, tuple[MPFloat, ...]],
     modes: Sequence[PrecisionMode],
 ) -> None:
-    with mp.workprec(AUTHORITATIVE_PRECISION_BITS):
+    with mp.workprec(COMPARISON_PRECISION_BITS):
         for mode in modes:
             for degree, (left, right) in enumerate(
                 zip(coarse[mode.name], fine[mode.name], strict=True),
@@ -644,28 +644,28 @@ def _compute_modes(
     modes: Sequence[PrecisionMode],
     *,
     series_degree: int,
-    precision_bits: int,
+    accuracy_bits: int,
 ) -> dict[str, tuple[MPFloat, ...]]:
     majorants = build_flint_majorants(DEFAULT_MAX_DEGREE, series_degree)
-    return _compute_modes_from_majorants(modes, majorants, precision_bits)
+    return _compute_modes_from_majorants(modes, majorants, accuracy_bits)
 
 
 def _compute_modes_from_majorants(
     modes: Sequence[PrecisionMode],
     majorants: Sequence[Sequence[Any]],
-    precision_bits: int,
+    accuracy_bits: int,
 ) -> dict[str, tuple[MPFloat, ...]]:
-    if precision_bits < 64:
-        raise ValueError("precision_bits must be at least 64")
+    if accuracy_bits < MIN_ROOT_ACCURACY_BITS:
+        raise ValueError(f"accuracy_bits must be at least {MIN_ROOT_ACCURACY_BITS}")
     old_precision = flint_ctx.prec
-    flint_ctx.prec = precision_bits
+    flint_ctx.prec = accuracy_bits + ARB_GUARD_BITS
     try:
         polynomials = _arb_polynomials(majorants)
         return {
             mode.name: _compute_theta_roots_from_arb(
                 mode.tolerance,
                 polynomials,
-                precision_bits,
+                accuracy_bits,
             )
             for mode in modes
         }
@@ -710,7 +710,7 @@ def _make_comparisons(
             mode_by_name["bfloat16"],
             roots["bfloat16"],
             None,
-            tolerance_match=True,
+            tolerance_match=None,
         ),
         compare_values(
             "float32/complex64 versus expmv single",
@@ -749,12 +749,12 @@ def run_experiment(
         checked = _compute_modes_from_majorants(
             modes,
             checked_majorants,
-            VERIFY_PRECISION_BITS,
+            ROOT_ACCURACY_BITS,
         )
         roots = _compute_modes_from_majorants(
             modes,
             authoritative_majorants,
-            AUTHORITATIVE_PRECISION_BITS,
+            ROOT_ACCURACY_BITS,
         )
         verify_root_convergence(checked, roots, modes)
     else:
@@ -762,7 +762,7 @@ def run_experiment(
         roots = _compute_modes(
             modes,
             series_degree=DEFAULT_SERIES_DEGREE,
-            precision_bits=DEFAULT_PRECISION_BITS,
+            accuracy_bits=ROOT_ACCURACY_BITS,
         )
     comparisons = _make_comparisons(roots, upstream)
     if checked is not None:
@@ -777,6 +777,12 @@ def _format_scalar(value: Any | None) -> str:
 
 def _format_optional_integer(value: int | None) -> str:
     return "N/A" if value is None else str(value)
+
+
+def _format_tolerance_match(value: bool | None) -> str:
+    if value is None:
+        return "N/A"
+    return "yes" if value else "no"
 
 
 def _maximum_row(
@@ -814,7 +820,8 @@ def render_report(comparisons: Sequence[Comparison]) -> str:
         target_matches = _format_optional_integer(comparison.target_matches)
         common_digits = _format_optional_integer(comparison.common_significant_digits)
         lines.append(
-            f"| {comparison.label} | {'yes' if comparison.tolerance_match else 'no'} "
+            f"| {comparison.label} | "
+            f"{_format_tolerance_match(comparison.tolerance_match)} "
             f"| {exact_matches} | {target_matches} | {common_digits} "
             f"| {max_relative} ({relative_degree}) | {max_ulp} ({ulp_degree}) |"
         )
