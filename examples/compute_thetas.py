@@ -29,11 +29,12 @@ import sympy as sp
 DEFAULT_MAX_DEGREE = 55
 DEFAULT_SERIES_DEGREE = 200
 DEFAULT_PRECISION_BITS = 512
-VERIFY_SERIES_DEGREE = 400
-VERIFY_PRECISION_BITS = 1024
+VERIFY_SERIES_DEGREE = 500
+VERIFY_PRECISION_BITS = 1280
 AUTHORITATIVE_SERIES_DEGREE = 800
 AUTHORITATIVE_PRECISION_BITS = 2048
 ROOT_DECIMAL_DIGITS = 170
+ROOT_BISECTION_STEPS = 256
 MPFloat: TypeAlias = Any
 FloatValues: TypeAlias = Sequence[float] | npt.NDArray[np.float64]
 EXPMV_COMMIT = "779f27e81afba16b9b2454ef0460ecf7bad23988"
@@ -224,7 +225,7 @@ def compute_theta_roots(
                 upper *= 2
             if not _majorant_definitely_below(lower, upper_coefficients, target_lower):
                 lower = mp.mpf(0)
-            for _ in range(precision_bits + 64):
+            for _ in range(min(precision_bits + 64, ROOT_BISECTION_STEPS)):
                 midpoint = (lower + upper) / 2
                 if midpoint == lower or midpoint == upper:
                     break
@@ -516,10 +517,29 @@ def _compute_modes(
     precision_bits: int,
 ) -> dict[str, tuple[MPFloat, ...]]:
     majorants = build_majorants(DEFAULT_MAX_DEGREE, series_degree)
+    return _compute_modes_from_majorants(modes, majorants, precision_bits)
+
+
+def _compute_modes_from_majorants(
+    modes: Sequence[PrecisionMode],
+    majorants: Sequence[Sequence[sp.Rational]],
+    precision_bits: int,
+) -> dict[str, tuple[MPFloat, ...]]:
     return {
         mode.name: compute_theta_roots(mode.tolerance, majorants, precision_bits)
         for mode in modes
     }
+
+
+def _majorant_prefixes(
+    majorants: Sequence[Sequence[sp.Rational]],
+    series_degree: int,
+) -> tuple[tuple[sp.Rational, ...], ...]:
+    if series_degree < 1 or any(
+        len(coefficients) < series_degree for coefficients in majorants
+    ):
+        raise ValueError("series_degree must be a positive available prefix")
+    return tuple(tuple(coefficients[:series_degree]) for coefficients in majorants)
 
 
 def _make_comparisons(
@@ -573,30 +593,35 @@ def run_experiment(
     fetch: Callable[[str], bytes] | None = None,
 ) -> tuple[Comparison, ...]:
     modes = (*NATIVE_MODES, EXPMV_HALF_MODE)
-    roots = _compute_modes(
-        modes,
-        series_degree=DEFAULT_SERIES_DEGREE,
-        precision_bits=DEFAULT_PRECISION_BITS,
-    )
-    checked = None
-    if verify:
-        checked = _compute_modes(
-            modes,
-            series_degree=VERIFY_SERIES_DEGREE,
-            precision_bits=VERIFY_PRECISION_BITS,
-        )
-        authoritative = _compute_modes(
-            modes,
-            series_degree=AUTHORITATIVE_SERIES_DEGREE,
-            precision_bits=AUTHORITATIVE_PRECISION_BITS,
-        )
-        verify_root_convergence(checked, authoritative, modes)
-        roots = authoritative
-
     upstream = {
         name: load_upstream(source, fetch=fetch)
         for name, source in UPSTREAM_SOURCES.items()
     }
+    if verify:
+        authoritative_majorants = build_majorants(
+            DEFAULT_MAX_DEGREE, AUTHORITATIVE_SERIES_DEGREE
+        )
+        checked_majorants = _majorant_prefixes(
+            authoritative_majorants, VERIFY_SERIES_DEGREE
+        )
+        checked = _compute_modes_from_majorants(
+            modes,
+            checked_majorants,
+            VERIFY_PRECISION_BITS,
+        )
+        roots = _compute_modes_from_majorants(
+            modes,
+            authoritative_majorants,
+            AUTHORITATIVE_PRECISION_BITS,
+        )
+        verify_root_convergence(checked, roots, modes)
+    else:
+        checked = None
+        roots = _compute_modes(
+            modes,
+            series_degree=DEFAULT_SERIES_DEGREE,
+            precision_bits=DEFAULT_PRECISION_BITS,
+        )
     comparisons = _make_comparisons(roots, upstream)
     if checked is not None:
         checked_comparisons = _make_comparisons(checked, upstream)
@@ -687,7 +712,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument(
         "--verify",
         action="store_true",
-        help="verify 400/1024 roots against authoritative 800/2048 roots",
+        help="verify 500/1280 roots against authoritative 800/2048 roots",
     )
     parser.add_argument(
         "--output",

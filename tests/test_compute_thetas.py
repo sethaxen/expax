@@ -42,6 +42,14 @@ def test_multiple_majorants_match_direct_symbolic_expansions():
         assert majorant == expected
 
 
+def test_majorant_prefixes_equal_independently_shorter_series():
+    full = compute_thetas.build_majorants(3, 12)
+
+    prefixes = compute_thetas._majorant_prefixes(full, 7)
+
+    assert prefixes == compute_thetas.build_majorants(3, 7)
+
+
 def test_precision_modes_have_exact_tolerances_and_complex_reuse():
     modes = {mode.name: mode for mode in compute_thetas.NATIVE_MODES}
 
