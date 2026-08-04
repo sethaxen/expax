@@ -50,6 +50,14 @@ def test_majorant_prefixes_equal_independently_shorter_series():
     assert prefixes == compute_thetas.build_majorants(3, 7)
 
 
+def test_flint_majorants_match_independent_sympy_recurrence():
+    expected = compute_thetas.build_majorants(3, 12)
+
+    received = compute_thetas.build_flint_majorants(3, 12)
+
+    assert received == expected
+
+
 def test_precision_modes_have_exact_tolerances_and_complex_reuse():
     modes = {mode.name: mode for mode in compute_thetas.NATIVE_MODES}
 
@@ -102,6 +110,39 @@ def test_computed_roots_are_positive_monotone_and_stable_when_rounded():
     assert [compute_thetas.round_down(value, mode) for value in ordinary] == [
         compute_thetas.round_down(value, mode) for value in checked
     ]
+
+
+def test_arb_root_solver_returns_hand_computed_safe_endpoint():
+    roots = compute_thetas.compute_theta_roots(
+        sp.Rational(1, 8),
+        ((sp.Rational(0), sp.Rational(1)),),
+        128,
+    )
+
+    assert roots == (mp.mpf("0.125"),)
+
+
+def test_arb_roots_match_directed_mpmath_reference():
+    mode = next(mode for mode in compute_thetas.NATIVE_MODES if mode.name == "float32")
+    symbolic = compute_thetas.build_majorants(6, 40)
+    flint = compute_thetas.build_flint_majorants(6, 40)
+
+    expected = compute_thetas.compute_theta_roots_reference(
+        mode.tolerance,
+        symbolic,
+        128,
+    )
+    received = compute_thetas.compute_theta_roots(
+        mode.tolerance,
+        flint,
+        128,
+    )
+
+    with mp.workprec(128):
+        assert all(
+            mp.almosteq(left, right, rel_eps=mp.mpf("1e-18"))
+            for left, right in zip(received, expected, strict=True)
+        )
 
 
 def _mpf_as_rational(value):

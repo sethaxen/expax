@@ -1,7 +1,9 @@
 """Independently derive and compare Al-Mohy--Higham theta values.
 
-The symbolic recurrence is a Python/SymPy port of ``compute_thetas.jl`` in this
-directory. Reference comparisons use commit-pinned data from
+The independent symbolic recurrence is a Python/SymPy port of
+``compute_thetas.jl`` in this directory. Full tables use exact FLINT rational
+power series and rigorous Arb root enclosures. Reference comparisons use
+commit-pinned data from
 https://github.com/higham/expmv, distributed there under BSD-2-Clause:
 https://github.com/higham/expmv/blob/779f27e81afba16b9b2454ef0460ecf7bad23988/license.txt
 """
@@ -25,16 +27,18 @@ import numpy as np
 import numpy.typing as npt
 import scipy.io
 import sympy as sp
+from flint import arb, arb_poly, fmpq, fmpq_series
+from flint import ctx as flint_ctx
 
 DEFAULT_MAX_DEGREE = 55
 DEFAULT_SERIES_DEGREE = 200
-DEFAULT_PRECISION_BITS = 512
+DEFAULT_PRECISION_BITS = 256
 VERIFY_SERIES_DEGREE = 1050
-VERIFY_PRECISION_BITS = 2688
+VERIFY_PRECISION_BITS = 256
 AUTHORITATIVE_SERIES_DEGREE = 1200
-AUTHORITATIVE_PRECISION_BITS = 3072
+AUTHORITATIVE_PRECISION_BITS = 256
 ROOT_DECIMAL_DIGITS = 170
-ROOT_BISECTION_STEPS = 256
+ROOT_BISECTION_STEPS = 128
 MPFloat: TypeAlias = Any
 FloatValues: TypeAlias = Sequence[float] | npt.NDArray[np.float64]
 EXPMV_COMMIT = "779f27e81afba16b9b2454ef0460ecf7bad23988"
@@ -119,6 +123,47 @@ def build_majorants(
     return tuple(majorants)
 
 
+def build_flint_majorants(
+    max_degree: int,
+    series_degree: int,
+) -> tuple[tuple[Any, ...], ...]:
+    """Build the majorants exactly using FLINT rational power series."""
+    if not 1 <= max_degree < series_degree:
+        raise ValueError("max_degree must be positive and below series_degree")
+
+    old_cap = flint_ctx.cap
+    flint_ctx.cap = series_degree + 1
+    try:
+        factorials = [math.factorial(k) for k in range(series_degree + 1)]
+        coefficients = [fmpq(1)]
+        coefficients.extend(
+            fmpq(-1 if k % 2 else 1, factorials[k]) for k in range(1, series_degree + 1)
+        )
+        majorants = []
+        for degree in range(1, max_degree + 1):
+            coefficients[degree] = fmpq(0)
+            denominator_left = factorials[degree]
+            for k in range(degree + 1, series_degree + 1):
+                remainder = k - degree
+                sign = -1 if remainder % 2 else 1
+                coefficients[k] += fmpq(
+                    sign,
+                    denominator_left * factorials[remainder],
+                )
+            logarithm = fmpq_series(
+                coefficients,
+                prec=series_degree + 1,
+            ).log()
+            log_coefficients = logarithm.coeffs()
+            log_coefficients.extend(
+                [fmpq(0)] * (series_degree + 1 - len(log_coefficients))
+            )
+            majorants.append(tuple(abs(value) for value in log_coefficients[1:]))
+    finally:
+        flint_ctx.cap = old_cap
+    return tuple(majorants)
+
+
 @dataclass(frozen=True)
 class PrecisionMode:
     name: str
@@ -194,12 +239,12 @@ def _majorant_definitely_above(
     return bool(lower_value > target_upper)
 
 
-def compute_theta_roots(
+def compute_theta_roots_reference(
     tolerance: sp.Rational,
     majorants: Sequence[Sequence[sp.Rational]],
     precision_bits: int,
 ) -> tuple[MPFloat, ...]:
-    """Return safe lower endpoints of high-precision theta root brackets."""
+    """Return safe roots using the independent directed-mpmath solver."""
     if tolerance <= 0:
         raise ValueError("tolerance must be positive")
     if precision_bits < 64:
@@ -241,6 +286,91 @@ def compute_theta_roots(
                     break
             roots.append(+lower)
     return tuple(roots)
+
+
+def _as_fmpq_rational(value: Any) -> Any:
+    """Convert a SymPy or FLINT rational to an exact FLINT rational."""
+    if isinstance(value, fmpq):
+        return value
+    return fmpq(int(value.p), int(value.q))
+
+
+def _as_mpf_fmpq(value: Any) -> MPFloat:
+    """Convert a FLINT rational to an mpmath value rounded downward."""
+    return mp.fdiv(int(value.p), int(value.q), rounding="d")
+
+
+def _arb_polynomials(
+    majorants: Sequence[Sequence[Any]],
+) -> tuple[Any, ...]:
+    return tuple(
+        arb_poly([_as_fmpq_rational(value) for value in coefficients])
+        for coefficients in majorants
+    )
+
+
+def _compute_theta_roots_from_arb(
+    tolerance: sp.Rational,
+    polynomials: Sequence[Any],
+    precision_bits: int,
+) -> tuple[MPFloat, ...]:
+    target = arb(_as_fmpq_rational(tolerance))
+    target_lower = target.lower()
+    target_upper = target.upper()
+    lower = fmpq(0)
+    exact_roots = []
+    bisection_steps = min(ROOT_BISECTION_STEPS, precision_bits // 2)
+
+    def classify(polynomial: Any, point: Any) -> int:
+        value = polynomial(arb(point))
+        if value.upper() <= target_lower:
+            return -1
+        if value.lower() > target_upper:
+            return 1
+        raise ArithmeticError(
+            "Arb enclosure cannot classify a root bracket endpoint; "
+            "increase precision_bits"
+        )
+
+    for polynomial in polynomials:
+        upper = fmpq(1)
+        while classify(polynomial, upper) < 0:
+            upper *= 2
+        if classify(polynomial, lower) > 0:
+            lower = fmpq(0)
+        for _ in range(bisection_steps):
+            midpoint = (lower + upper) / 2
+            if classify(polynomial, midpoint) < 0:
+                lower = midpoint
+            else:
+                upper = midpoint
+        exact_roots.append(lower)
+
+    with mp.workprec(precision_bits):
+        return tuple(+_as_mpf_fmpq(value) for value in exact_roots)
+
+
+def compute_theta_roots(
+    tolerance: sp.Rational,
+    majorants: Sequence[Sequence[Any]],
+    precision_bits: int,
+) -> tuple[MPFloat, ...]:
+    """Return safe root lower bounds using rigorous Arb enclosures."""
+    if tolerance <= 0:
+        raise ValueError("tolerance must be positive")
+    if precision_bits < 64:
+        raise ValueError("precision_bits must be at least 64")
+
+    old_precision = flint_ctx.prec
+    flint_ctx.prec = precision_bits
+    try:
+        return _compute_theta_roots_from_arb(
+            tolerance,
+            _arb_polynomials(majorants),
+            precision_bits,
+        )
+    finally:
+        flint_ctx.prec = old_precision
 
 
 def as_mpf(value: Any) -> MPFloat:
@@ -516,25 +646,37 @@ def _compute_modes(
     series_degree: int,
     precision_bits: int,
 ) -> dict[str, tuple[MPFloat, ...]]:
-    majorants = build_majorants(DEFAULT_MAX_DEGREE, series_degree)
+    majorants = build_flint_majorants(DEFAULT_MAX_DEGREE, series_degree)
     return _compute_modes_from_majorants(modes, majorants, precision_bits)
 
 
 def _compute_modes_from_majorants(
     modes: Sequence[PrecisionMode],
-    majorants: Sequence[Sequence[sp.Rational]],
+    majorants: Sequence[Sequence[Any]],
     precision_bits: int,
 ) -> dict[str, tuple[MPFloat, ...]]:
-    return {
-        mode.name: compute_theta_roots(mode.tolerance, majorants, precision_bits)
-        for mode in modes
-    }
+    if precision_bits < 64:
+        raise ValueError("precision_bits must be at least 64")
+    old_precision = flint_ctx.prec
+    flint_ctx.prec = precision_bits
+    try:
+        polynomials = _arb_polynomials(majorants)
+        return {
+            mode.name: _compute_theta_roots_from_arb(
+                mode.tolerance,
+                polynomials,
+                precision_bits,
+            )
+            for mode in modes
+        }
+    finally:
+        flint_ctx.prec = old_precision
 
 
 def _majorant_prefixes(
-    majorants: Sequence[Sequence[sp.Rational]],
+    majorants: Sequence[Sequence[Any]],
     series_degree: int,
-) -> tuple[tuple[sp.Rational, ...], ...]:
+) -> tuple[tuple[Any, ...], ...]:
     if series_degree < 1 or any(
         len(coefficients) < series_degree for coefficients in majorants
     ):
@@ -598,7 +740,7 @@ def run_experiment(
         for name, source in UPSTREAM_SOURCES.items()
     }
     if verify:
-        authoritative_majorants = build_majorants(
+        authoritative_majorants = build_flint_majorants(
             DEFAULT_MAX_DEGREE, AUTHORITATIVE_SERIES_DEGREE
         )
         checked_majorants = _majorant_prefixes(
@@ -712,7 +854,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument(
         "--verify",
         action="store_true",
-        help="verify 1050/2688 roots against authoritative 1200/3072 roots",
+        help="verify 1050-term roots against authoritative 1200-term roots",
     )
     parser.add_argument(
         "--output",
