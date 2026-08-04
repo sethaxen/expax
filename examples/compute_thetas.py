@@ -29,10 +29,10 @@ import sympy as sp
 DEFAULT_MAX_DEGREE = 55
 DEFAULT_SERIES_DEGREE = 200
 DEFAULT_PRECISION_BITS = 512
-VERIFY_SERIES_DEGREE = 500
-VERIFY_PRECISION_BITS = 1280
-AUTHORITATIVE_SERIES_DEGREE = 800
-AUTHORITATIVE_PRECISION_BITS = 2048
+VERIFY_SERIES_DEGREE = 1050
+VERIFY_PRECISION_BITS = 2688
+AUTHORITATIVE_SERIES_DEGREE = 1200
+AUTHORITATIVE_PRECISION_BITS = 3072
 ROOT_DECIMAL_DIGITS = 170
 ROOT_BISECTION_STEPS = 256
 MPFloat: TypeAlias = Any
@@ -712,7 +712,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument(
         "--verify",
         action="store_true",
-        help="verify 500/1280 roots against authoritative 800/2048 roots",
+        help="verify 1050/2688 roots against authoritative 1200/3072 roots",
     )
     parser.add_argument(
         "--output",
