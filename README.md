@@ -33,4 +33,4 @@ result = action(vector)
 ```
 
 Operators and vectors may be arbitrary PyTrees of JAX arrays.
-Planning uses runtime operator parameters inside `jax.jit`, arbitrary time points use synchronized parallel actions, and equally spaced points can opt into the specialized Al-Mohy--Higham interval algorithm.
+Planning uses runtime operator parameters inside `jax.jit`, and arbitrary time points use synchronized actions.
