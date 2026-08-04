@@ -184,9 +184,12 @@ lint = [
     { name = "ruff" },
 ]
 test = [
+    { name = "ml-dtypes" },
+    { name = "mpmath" },
     { name = "pytest" },
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "scipy", version = "1.18.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "sympy" },
 ]
 theta = [
     { name = "ml-dtypes" },
@@ -215,8 +218,11 @@ lint = [
     { name = "ruff", specifier = ">=0.11" },
 ]
 test = [
+    { name = "ml-dtypes", specifier = ">=0.5" },
+    { name = "mpmath", specifier = ">=1.3" },
     { name = "pytest", specifier = ">=8,<10" },
     { name = "scipy", specifier = ">=1.12" },
+    { name = "sympy", specifier = ">=1.14" },
 ]
 theta = [
     { name = "ml-dtypes", specifier = ">=0.5" },

@@ -31,6 +31,17 @@ def test_degree_one_majorant_coefficients_are_exact():
     )
 
 
+def test_multiple_majorants_match_direct_symbolic_expansions():
+    x = sp.symbols("x")
+
+    for degree, majorant in enumerate(compute_thetas.build_majorants(3, 8), start=1):
+        taylor = sum(x**power / sp.factorial(power) for power in range(degree + 1))
+        direct = sp.log(sp.exp(-x) * taylor).series(x, 0, 9).removeO().expand()
+        expected = tuple(abs(direct.coeff(x, power)) for power in range(1, 9))
+
+        assert majorant == expected
+
+
 def test_precision_modes_have_exact_tolerances_and_complex_reuse():
     modes = {mode.name: mode for mode in compute_thetas.NATIVE_MODES}
 
@@ -83,6 +94,32 @@ def test_computed_roots_are_positive_monotone_and_stable_when_rounded():
     assert [compute_thetas.round_down(value, mode) for value in ordinary] == [
         compute_thetas.round_down(value, mode) for value in checked
     ]
+
+
+def _mpf_as_rational(value):
+    sign, mantissa, exponent, _bit_count = value._mpf_
+    numerator = -mantissa if sign else mantissa
+    if exponent >= 0:
+        return sp.Rational(numerator * 2**exponent)
+    return sp.Rational(numerator, 2 ** (-exponent))
+
+
+def test_root_lower_endpoints_satisfy_majorants_exactly():
+    mode = next(mode for mode in compute_thetas.NATIVE_MODES if mode.name == "float16")
+    majorants = compute_thetas.build_majorants(4, 20)
+    roots = compute_thetas.compute_theta_roots(mode.tolerance, majorants, 64)
+
+    for root, coefficients in zip(roots, majorants, strict=True):
+        exact_root = _mpf_as_rational(root)
+        exact_value = sum(
+            (
+                coefficient * exact_root**power
+                for power, coefficient in enumerate(coefficients)
+            ),
+            start=sp.Rational(0),
+        )
+
+        assert exact_value <= mode.tolerance
 
 
 def _mat_payload(values):
@@ -180,6 +217,34 @@ def test_comparison_reports_target_matches_and_decimal_agreement():
     assert comparison.rows[0].ulp_distance == 0
 
 
+def test_comparison_uses_common_prefix_of_longer_upstream_table():
+    mode = next(mode for mode in compute_thetas.NATIVE_MODES if mode.name == "float32")
+
+    comparison = compute_thetas.compare_values(
+        "single",
+        mode,
+        (mp.mpf("1.25"),),
+        np.asarray([1.25, 2.0]),
+        tolerance_match=True,
+    )
+
+    assert len(comparison.rows) == 1
+    assert comparison.exact_binary64_matches == 1
+
+
+def test_comparison_rejects_shorter_upstream_table():
+    mode = next(mode for mode in compute_thetas.NATIVE_MODES if mode.name == "float32")
+
+    with pytest.raises(ValueError, match="at least as many"):
+        compute_thetas.compare_values(
+            "single",
+            mode,
+            (mp.mpf("1.25"), mp.mpf("2.0")),
+            np.asarray([1.25]),
+            tolerance_match=True,
+        )
+
+
 def test_decimal_agreement_finds_greatest_common_precision():
     received = compute_thetas.maximum_common_significant_digits(
         (mp.mpf("1.23456"),),
@@ -203,3 +268,71 @@ def test_comparison_supports_a_mode_without_upstream_data():
     assert comparison.upstream_available is False
     assert comparison.rows[0].upstream is None
     assert comparison.common_significant_digits is None
+
+
+def test_verify_root_convergence_rejects_sub_ulp_root_drift():
+    mode = next(mode for mode in compute_thetas.NATIVE_MODES if mode.name == "float16")
+    with mp.workprec(256):
+        coarse = {mode.name: (+mp.mpf("1.0"),)}
+        changed = {mode.name: (+mp.mpf("1.0000000000000000001"),)}
+
+    assert compute_thetas.round_down(coarse[mode.name][0], mode) == (
+        compute_thetas.round_down(changed[mode.name][0], mode)
+    )
+    with pytest.raises(ArithmeticError, match="roots did not converge"):
+        compute_thetas.verify_root_convergence(coarse, changed, (mode,))
+
+
+def test_verify_report_stability_rejects_changed_metrics():
+    mode = next(mode for mode in compute_thetas.NATIVE_MODES if mode.name == "float32")
+    upstream = np.asarray([1.0])
+    with mp.workprec(256):
+        coarse_root = +mp.mpf("1.0")
+        changed_root = +mp.mpf("1.0000000000000001")
+    coarse = (
+        compute_thetas.compare_values(
+            "single", mode, (coarse_root,), upstream, tolerance_match=True
+        ),
+    )
+    changed = (
+        compute_thetas.compare_values(
+            "single", mode, (changed_root,), upstream, tolerance_match=True
+        ),
+    )
+
+    with pytest.raises(ArithmeticError, match="report metrics did not converge"):
+        compute_thetas.verify_report_stability(coarse, changed)
+
+
+def test_render_report_contains_provenance_mappings_and_na():
+    bfloat_mode = next(
+        mode for mode in compute_thetas.NATIVE_MODES if mode.name == "bfloat16"
+    )
+    single_mode = next(
+        mode for mode in compute_thetas.NATIVE_MODES if mode.name == "float32"
+    )
+    comparisons = (
+        compute_thetas.compare_values(
+            "bfloat16 native",
+            bfloat_mode,
+            (mp.mpf("1.0"),),
+            None,
+            tolerance_match=True,
+        ),
+        compute_thetas.compare_values(
+            "single",
+            single_mode,
+            (mp.mpf("1.0"),),
+            np.asarray([1.0]),
+            tolerance_match=True,
+        ),
+    )
+
+    report = compute_thetas.render_report(comparisons)
+
+    assert compute_thetas.EXPMV_COMMIT in report
+    assert compute_thetas.EXPMV_LICENSE in report
+    assert "complex64 -> float32" in report
+    assert "complex128 -> float64" in report
+    assert "N/A" in report
+    assert "| 1 |" in report

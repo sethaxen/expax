@@ -8,18 +8,21 @@ https://github.com/higham/expmv/blob/779f27e81afba16b9b2454ef0460ecf7bad23988/li
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import io
 import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from decimal import ROUND_HALF_EVEN, Decimal, localcontext
-from typing import Any, TypeAlias
+from pathlib import Path
+from typing import Any, Literal, TypeAlias
 from urllib.request import urlopen
 
 import ml_dtypes
 import mpmath as mp
 import numpy as np
+import numpy.typing as npt
 import scipy.io
 import sympy as sp
 
@@ -32,6 +35,7 @@ AUTHORITATIVE_SERIES_DEGREE = 800
 AUTHORITATIVE_PRECISION_BITS = 2048
 ROOT_DECIMAL_DIGITS = 170
 MPFloat: TypeAlias = Any
+FloatValues: TypeAlias = Sequence[float] | npt.NDArray[np.float64]
 EXPMV_COMMIT = "779f27e81afba16b9b2454ef0460ecf7bad23988"
 EXPMV_REPOSITORY = "https://github.com/higham/expmv"
 EXPMV_LICENSE = f"{EXPMV_REPOSITORY}/blob/{EXPMV_COMMIT}/license.txt"
@@ -150,18 +154,43 @@ EXPMV_HALF_MODE = PrecisionMode(
 )
 
 
-def _as_mpf_rational(value: sp.Rational) -> MPFloat:
-    return mp.mpf(int(value.p)) / int(value.q)
+def _as_mpf_rational(
+    value: sp.Rational,
+    *,
+    rounding: Literal["d", "n", "u"] = "n",
+) -> MPFloat:
+    return mp.fdiv(int(value.p), int(value.q), rounding=rounding)
 
 
 def _evaluate_majorant(
     x: MPFloat,
     coefficients: Sequence[MPFloat],
+    *,
+    rounding: Literal["d", "n", "u"] = "n",
 ) -> MPFloat:
     value = mp.mpf(0)
     for coefficient in reversed(coefficients):
-        value = value * x + coefficient
+        product = mp.fmul(value, x, rounding=rounding)
+        value = mp.fadd(product, coefficient, rounding=rounding)
     return value
+
+
+def _majorant_definitely_below(
+    value: MPFloat,
+    upper_coefficients: Sequence[MPFloat],
+    target_lower: MPFloat,
+) -> bool:
+    upper_value = _evaluate_majorant(value, upper_coefficients, rounding="u")
+    return bool(upper_value <= target_lower)
+
+
+def _majorant_definitely_above(
+    value: MPFloat,
+    lower_coefficients: Sequence[MPFloat],
+    target_upper: MPFloat,
+) -> bool:
+    lower_value = _evaluate_majorant(value, lower_coefficients, rounding="d")
+    return bool(lower_value > target_upper)
 
 
 def compute_theta_roots(
@@ -176,25 +205,39 @@ def compute_theta_roots(
         raise ValueError("precision_bits must be at least 64")
     roots = []
     with mp.workprec(precision_bits):
-        target = _as_mpf_rational(tolerance)
+        target_lower = _as_mpf_rational(tolerance, rounding="d")
+        target_upper = _as_mpf_rational(tolerance, rounding="u")
         lower = mp.mpf(0)
         for degree, coefficients in enumerate(majorants, start=1):
-            numeric_coefficients = tuple(
-                _as_mpf_rational(coefficient) for coefficient in coefficients
+            lower_coefficients = tuple(
+                _as_mpf_rational(coefficient, rounding="d")
+                for coefficient in coefficients
             )
-            upper = mp.root(target * math.factorial(degree + 1), degree)
-            while _evaluate_majorant(upper, numeric_coefficients) <= target:
+            upper_coefficients = tuple(
+                _as_mpf_rational(coefficient, rounding="u")
+                for coefficient in coefficients
+            )
+            upper = mp.root(target_lower * math.factorial(degree + 1), degree)
+            while not _majorant_definitely_above(
+                upper, lower_coefficients, target_upper
+            ):
                 upper *= 2
-            if _evaluate_majorant(lower, numeric_coefficients) > target:
-                raise ArithmeticError("theta sequence lost monotonicity")
+            if not _majorant_definitely_below(lower, upper_coefficients, target_lower):
+                lower = mp.mpf(0)
             for _ in range(precision_bits + 64):
                 midpoint = (lower + upper) / 2
                 if midpoint == lower or midpoint == upper:
                     break
-                if _evaluate_majorant(midpoint, numeric_coefficients) <= target:
+                if _majorant_definitely_below(
+                    midpoint, upper_coefficients, target_lower
+                ):
                     lower = midpoint
-                else:
+                elif _majorant_definitely_above(
+                    midpoint, lower_coefficients, target_upper
+                ):
                     upper = midpoint
+                else:
+                    break
             roots.append(+lower)
     return tuple(roots)
 
@@ -283,7 +326,7 @@ def load_upstream(
     source: UpstreamSource,
     *,
     fetch: Callable[[str], bytes] | None = None,
-) -> np.ndarray:
+) -> npt.NDArray[np.float64]:
     payload = (fetch or _download)(source.url)
     digest = hashlib.sha256(payload).hexdigest()
     if digest != source.sha256:
@@ -346,7 +389,7 @@ def _decimal_from_mpf(value: MPFloat, digits: int) -> Decimal:
 
 def maximum_common_significant_digits(
     roots: Sequence[MPFloat],
-    upstream: Sequence[float],
+    upstream: FloatValues,
 ) -> int | None:
     if len(roots) != len(upstream):
         raise ValueError("computed and upstream tables must have equal lengths")
@@ -373,16 +416,19 @@ def compare_values(
     label: str,
     mode: PrecisionMode,
     roots: Sequence[MPFloat],
-    upstream: Sequence[float] | None,
+    upstream: FloatValues | None,
     *,
     tolerance_match: bool,
 ) -> Comparison:
-    if upstream is not None and len(roots) != len(upstream):
-        raise ValueError("computed and upstream tables must have equal lengths")
+    if upstream is not None and len(upstream) < len(roots):
+        raise ValueError("upstream table must contain at least as many values as roots")
+    upstream_prefix = None if upstream is None else upstream[: len(roots)]
     rows = []
     for degree, root in enumerate(roots, start=1):
         target = round_down(root, mode)
-        reference = None if upstream is None else float(upstream[degree - 1])
+        reference = (
+            None if upstream_prefix is None else float(upstream_prefix[degree - 1])
+        )
         reference_target = None
         relative = None
         distance = None
@@ -403,15 +449,15 @@ def compare_values(
                 distance,
             )
         )
-    if upstream is None:
+    if upstream_prefix is None:
         exact_matches = target_matches = common_digits = None
     else:
         exact_matches = sum(
             float(root) == float(reference)
-            for root, reference in zip(roots, upstream, strict=True)
+            for root, reference in zip(roots, upstream_prefix, strict=True)
         )
         target_matches = sum(row.ulp_distance == 0 for row in rows)
-        common_digits = maximum_common_significant_digits(roots, upstream)
+        common_digits = maximum_common_significant_digits(roots, upstream_prefix)
     return Comparison(
         label,
         mode,
@@ -421,3 +467,244 @@ def compare_values(
         target_matches,
         common_digits,
     )
+
+
+def _format_mpf(value: MPFloat | None, digits: int = 17) -> str:
+    if value is None:
+        return "N/A"
+    text = mp.nstr(value, n=digits)
+    if not isinstance(text, str):
+        raise ArithmeticError(f"expected scalar decimal text, received {text!r}")
+    return text
+
+
+def verify_root_convergence(
+    coarse: dict[str, tuple[MPFloat, ...]],
+    fine: dict[str, tuple[MPFloat, ...]],
+    modes: Sequence[PrecisionMode],
+) -> None:
+    with mp.workprec(AUTHORITATIVE_PRECISION_BITS):
+        for mode in modes:
+            for degree, (left, right) in enumerate(
+                zip(coarse[mode.name], fine[mode.name], strict=True),
+                start=1,
+            ):
+                relative = +(abs(left - right) / abs(right))
+                decimal_projections_match = all(
+                    _round_significant(_decimal_from_mpf(left, 180), digits)
+                    == _round_significant(_decimal_from_mpf(right, 180), digits)
+                    for digits in range(1, 18)
+                )
+                converged = (
+                    relative <= mp.mpf("1e-20")
+                    and float(left) == float(right)
+                    and round_down(left, mode) == round_down(right, mode)
+                    and decimal_projections_match
+                    and _format_mpf(left) == _format_mpf(right)
+                )
+                if not converged:
+                    raise ArithmeticError(
+                        f"roots did not converge for {mode.name} degree {degree}: "
+                        f"relative difference {_format_mpf(relative, 8)}"
+                    )
+
+
+def _compute_modes(
+    modes: Sequence[PrecisionMode],
+    *,
+    series_degree: int,
+    precision_bits: int,
+) -> dict[str, tuple[MPFloat, ...]]:
+    majorants = build_majorants(DEFAULT_MAX_DEGREE, series_degree)
+    return {
+        mode.name: compute_theta_roots(mode.tolerance, majorants, precision_bits)
+        for mode in modes
+    }
+
+
+def _make_comparisons(
+    roots: dict[str, tuple[MPFloat, ...]],
+    upstream: dict[str, npt.NDArray[np.float64]],
+) -> tuple[Comparison, ...]:
+    modes = (*NATIVE_MODES, EXPMV_HALF_MODE)
+    mode_by_name = {mode.name: mode for mode in modes}
+    return (
+        compare_values(
+            "float16 native tolerance versus expmv half",
+            mode_by_name["float16"],
+            roots["float16"],
+            upstream["half"],
+            tolerance_match=False,
+        ),
+        compare_values(
+            "float16 matched expmv tolerance",
+            EXPMV_HALF_MODE,
+            roots[EXPMV_HALF_MODE.name],
+            upstream["half"],
+            tolerance_match=True,
+        ),
+        compare_values(
+            "bfloat16 native tolerance",
+            mode_by_name["bfloat16"],
+            roots["bfloat16"],
+            None,
+            tolerance_match=True,
+        ),
+        compare_values(
+            "float32/complex64 versus expmv single",
+            mode_by_name["float32"],
+            roots["float32"],
+            upstream["single"],
+            tolerance_match=True,
+        ),
+        compare_values(
+            "float64/complex128 versus expmv double",
+            mode_by_name["float64"],
+            roots["float64"],
+            upstream["double"],
+            tolerance_match=True,
+        ),
+    )
+
+
+def run_experiment(
+    *,
+    verify: bool = False,
+    fetch: Callable[[str], bytes] | None = None,
+) -> tuple[Comparison, ...]:
+    modes = (*NATIVE_MODES, EXPMV_HALF_MODE)
+    roots = _compute_modes(
+        modes,
+        series_degree=DEFAULT_SERIES_DEGREE,
+        precision_bits=DEFAULT_PRECISION_BITS,
+    )
+    checked = None
+    if verify:
+        checked = _compute_modes(
+            modes,
+            series_degree=VERIFY_SERIES_DEGREE,
+            precision_bits=VERIFY_PRECISION_BITS,
+        )
+        authoritative = _compute_modes(
+            modes,
+            series_degree=AUTHORITATIVE_SERIES_DEGREE,
+            precision_bits=AUTHORITATIVE_PRECISION_BITS,
+        )
+        verify_root_convergence(checked, authoritative, modes)
+        roots = authoritative
+
+    upstream = {
+        name: load_upstream(source, fetch=fetch)
+        for name, source in UPSTREAM_SOURCES.items()
+    }
+    comparisons = _make_comparisons(roots, upstream)
+    if checked is not None:
+        checked_comparisons = _make_comparisons(checked, upstream)
+        verify_report_stability(checked_comparisons, comparisons)
+    return comparisons
+
+
+def _format_scalar(value: Any | None) -> str:
+    return "N/A" if value is None else repr(float(value))
+
+
+def _format_optional_integer(value: int | None) -> str:
+    return "N/A" if value is None else str(value)
+
+
+def _maximum_row(
+    comparison: Comparison,
+    attribute: str,
+) -> tuple[str, str]:
+    available = [row for row in comparison.rows if getattr(row, attribute) is not None]
+    if not available:
+        return "N/A", "N/A"
+    row = max(available, key=lambda candidate: getattr(candidate, attribute))
+    value = getattr(row, attribute)
+    return _format_mpf(value) if isinstance(value, mp.mpf) else str(value), str(
+        row.degree
+    )
+
+
+def render_report(comparisons: Sequence[Comparison]) -> str:
+    lines = [
+        "# Theta comparison",
+        "",
+        f"Source: [{EXPMV_REPOSITORY}]({EXPMV_REPOSITORY}) at `{EXPMV_COMMIT}`.",
+        f"Upstream license: [BSD-2-Clause]({EXPMV_LICENSE}).",
+        "Complex reuse: `complex64 -> float32`; `complex128 -> float64`.",
+        "",
+        "## Summary",
+        "",
+        "| Mode | Tolerances match | Binary64 matches | Target matches | "
+        "Common digits | Max relative (degree) | Max ULP (degree) |",
+        "|---|---:|---:|---:|---:|---:|---:|",
+    ]
+    for comparison in comparisons:
+        max_relative, relative_degree = _maximum_row(comparison, "relative_difference")
+        max_ulp, ulp_degree = _maximum_row(comparison, "ulp_distance")
+        exact_matches = _format_optional_integer(comparison.exact_binary64_matches)
+        target_matches = _format_optional_integer(comparison.target_matches)
+        common_digits = _format_optional_integer(comparison.common_significant_digits)
+        lines.append(
+            f"| {comparison.label} | {'yes' if comparison.tolerance_match else 'no'} "
+            f"| {exact_matches} | {target_matches} | {common_digits} "
+            f"| {max_relative} ({relative_degree}) | {max_ulp} ({ulp_degree}) |"
+        )
+    for comparison in comparisons:
+        lines.extend(
+            [
+                "",
+                f"## {comparison.label}",
+                "",
+                "| Degree | Computed root | Computed target | Upstream binary64 | "
+                "Upstream target | Relative difference | ULP distance |",
+                "|---:|---:|---:|---:|---:|---:|---:|",
+            ]
+        )
+        for row in comparison.rows:
+            lines.append(
+                f"| {row.degree} | {_format_mpf(row.root)} | "
+                f"{_format_scalar(row.target)} | "
+                f"{repr(row.upstream) if row.upstream is not None else 'N/A'} | "
+                f"{_format_scalar(row.upstream_target)} | "
+                f"{_format_mpf(row.relative_difference)} | "
+                f"{row.ulp_distance if row.ulp_distance is not None else 'N/A'} |"
+            )
+    return "\n".join(lines)
+
+
+def verify_report_stability(
+    coarse: Sequence[Comparison],
+    fine: Sequence[Comparison],
+) -> None:
+    if render_report(coarse) != render_report(fine):
+        raise ArithmeticError("comparison report metrics did not converge")
+
+
+def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--verify",
+        action="store_true",
+        help="verify 400/1024 roots against authoritative 800/2048 roots",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        help="also write the Markdown report to this path",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = _parse_args(argv)
+    report = render_report(run_experiment(verify=args.verify))
+    if args.output is not None:
+        args.output.write_text(f"{report}\n")
+    print(report)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
