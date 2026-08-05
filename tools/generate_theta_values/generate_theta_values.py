@@ -5,10 +5,10 @@ Usage, from the repository root:
     uv run --project tools/generate_theta_values --locked python \\
         tools/generate_theta_values/generate_theta_values.py
 
-The generator builds its coefficients exactly as rational numbers, takes an
-absolute-coefficient majorant, and uses Arb to enclose every positive root.
-Each enclosure is then converted downward to binary64, so the emitted value is
-the largest binary64 value safely below the exact root.
+The generator builds its coefficients exactly as rational numbers and uses Arb
+to enclose the positive roots of absolute-coefficient majorants. It solves a
+1,050-term majorant and requires a 1,200-term extension to select the same
+downward-rounded binary64 value before emitting it.
 
 Higham NJ, Al-Mohy AH. Computing matrix functions. Acta Numerica.
 2010;19:159-208. doi:10.1017/S0962492910000036.
@@ -21,7 +21,8 @@ from flint import arb, arb_poly, fmpq, fmpq_series
 from flint import ctx as flint_ctx
 
 MAX_DEGREE = 55
-SERIES_DEGREE = 1200
+SERIES_DEGREE = 1050
+VERIFICATION_SERIES_DEGREE = 1200
 ROOT_ACCURACY_BITS = 128
 ARB_GUARD_BITS = 128
 TOLERANCE_EXPONENTS = (11, 8, 24, 53)
@@ -30,23 +31,25 @@ OUTPUT_PATH = (
 )
 
 
-def build_majorants() -> tuple[arb_poly, ...]:
-    """Build absolute-coefficient majorants with exact rational series."""
+def build_majorants() -> tuple[tuple[arb_poly, ...], tuple[arb_poly, ...]]:
+    """Build primary and extended majorants from one exact rational series."""
     old_cap = flint_ctx.cap
     old_prec = flint_ctx.prec
-    flint_ctx.cap = SERIES_DEGREE + 1
+    flint_ctx.cap = VERIFICATION_SERIES_DEGREE + 1
     flint_ctx.prec = ROOT_ACCURACY_BITS + ARB_GUARD_BITS
     try:
-        factorials = [math.factorial(k) for k in range(SERIES_DEGREE + 1)]
+        factorials = [math.factorial(k) for k in range(VERIFICATION_SERIES_DEGREE + 1)]
         coefficients = [fmpq(1)]
         coefficients.extend(
-            fmpq(-1 if k % 2 else 1, factorials[k]) for k in range(1, SERIES_DEGREE + 1)
+            fmpq(-1 if k % 2 else 1, factorials[k])
+            for k in range(1, VERIFICATION_SERIES_DEGREE + 1)
         )
         majorants = []
+        verification_majorants = []
         for degree in range(1, MAX_DEGREE + 1):
             coefficients[degree] = fmpq(0)
             denominator_left = factorials[degree]
-            for k in range(degree + 1, SERIES_DEGREE + 1):
+            for k in range(degree + 1, VERIFICATION_SERIES_DEGREE + 1):
                 remainder = k - degree
                 coefficients[k] += fmpq(
                     -1 if remainder % 2 else 1,
@@ -54,10 +57,12 @@ def build_majorants() -> tuple[arb_poly, ...]:
                 )
             logarithm = fmpq_series(
                 coefficients,
-                prec=SERIES_DEGREE + 1,
+                prec=VERIFICATION_SERIES_DEGREE + 1,
             ).log()
-            majorants.append(arb_poly([abs(value) for value in logarithm.coeffs()[1:]]))
-        return tuple(majorants)
+            absolute_coefficients = [abs(value) for value in logarithm.coeffs()[1:]]
+            majorants.append(arb_poly(absolute_coefficients[:SERIES_DEGREE]))
+            verification_majorants.append(arb_poly(absolute_coefficients))
+        return tuple(majorants), tuple(verification_majorants)
     finally:
         flint_ctx.prec = old_prec
         flint_ctx.cap = old_cap
@@ -113,6 +118,26 @@ def binary64_below(lower: fmpq, upper: fmpq) -> float:
     return candidate
 
 
+def verify_binary64_convergence(
+    values: tuple[float, ...],
+    majorants: tuple[arb_poly, ...],
+    tolerance: fmpq,
+) -> None:
+    """Require the extended majorants to select the same binary64 values."""
+    old_prec = flint_ctx.prec
+    flint_ctx.prec = ROOT_ACCURACY_BITS + ARB_GUARD_BITS
+    try:
+        for value, majorant in zip(values, majorants, strict=True):
+            lower = _as_fmpq(value)
+            upper = _as_fmpq(math.nextafter(value, math.inf))
+            if not _classify_enclosure(majorant(arb(lower)), tolerance):
+                raise ArithmeticError("theta values did not converge")
+            if _classify_enclosure(majorant(arb(upper)), tolerance):
+                raise ArithmeticError("theta values did not converge")
+    finally:
+        flint_ctx.prec = old_prec
+
+
 def render_module(values: dict[float, tuple[float, ...]]) -> str:
     """Render the generated table with exact binary64 spellings."""
     lines = [
@@ -140,14 +165,14 @@ def render_module(values: dict[float, tuple[float, ...]]) -> str:
 
 
 def main() -> None:
-    majorants = build_majorants()
+    majorants, verification_majorants = build_majorants()
     values = {}
     for exponent in TOLERANCE_EXPONENTS:
         tolerance = fmpq(1, 2**exponent)
         brackets = bracket_theta_values(majorants, tolerance)
-        values[2.0**-exponent] = tuple(
-            binary64_below(lower, upper) for lower, upper in brackets
-        )
+        candidates = tuple(binary64_below(lower, upper) for lower, upper in brackets)
+        verify_binary64_convergence(candidates, verification_majorants, tolerance)
+        values[2.0**-exponent] = candidates
     rendered = render_module(values)
     if not OUTPUT_PATH.exists() or OUTPUT_PATH.read_text(encoding="utf-8") != rendered:
         OUTPUT_PATH.write_text(rendered, encoding="utf-8")
