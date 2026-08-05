@@ -1,5 +1,3 @@
-import math
-from decimal import Decimal, localcontext
 from functools import cache
 
 import jax.numpy as jnp
@@ -22,60 +20,42 @@ _DEFAULT_TOLERANCE_BY_REAL_DTYPE = {
     np.dtype(jnp.float32): 2.0**-24,
     np.dtype(jnp.float64): 2.0**-53,
 }
+_SUPPORTED_TOLERANCES = tuple(sorted(_THETA_VALUES_BY_TOLERANCE))
 
 
-@cache
-def _compute_theta(degree, tol):
-    limit = max(200, 4 * degree + 80)
-    with localcontext() as context:
-        context.prec = 100
-        factorials = [Decimal(1)]
-        for k in range(1, limit + 1):
-            factorials.append(factorials[-1] * k)
+def _real_dtype(dtype):
+    dtype = jnp.dtype(dtype)
+    if dtype in _REAL_DTYPE_BY_DTYPE:
+        return _REAL_DTYPE_BY_DTYPE[dtype]
+    if dtype.kind == "c":
+        return np.dtype(f"float{4 * np.dtype(dtype).itemsize}")
+    if dtype.kind == "f":
+        return np.dtype(dtype)
+    else:
+        raise TypeError(f"unsupported vector-space dtype: {dtype}") from None
 
-        product_coefficients = [Decimal(0)] * (limit + 1)
-        product_coefficients[0] = Decimal(1)
-        for n in range(degree + 1, limit + 1):
-            product_coefficients[n] = sum(
-                (
-                    (Decimal(-1) if (n - j) % 2 else Decimal(1))
-                    / (factorials[n - j] * factorials[j])
-                    for j in range(degree + 1)
-                ),
-                start=Decimal(0),
-            )
 
-        log_coefficients = [Decimal(0)] * (limit + 1)
-        for n in range(degree + 1, limit + 1):
-            convolution = sum(
-                Decimal(k) * log_coefficients[k] * product_coefficients[n - k]
-                for k in range(degree + 1, n)
-            )
-            log_coefficients[n] = product_coefficients[n] - convolution / Decimal(n)
+def _dtype_tolerance(dtype):
+    real_dtype = _real_dtype(dtype)
+    if real_dtype in _DEFAULT_TOLERANCE_BY_REAL_DTYPE:
+        return _DEFAULT_TOLERANCE_BY_REAL_DTYPE[real_dtype]
+    return float(np.finfo(real_dtype).eps / 2)
 
-        target = Decimal.from_float(float(tol))
 
-        def backward_error_bound(x):
-            value = Decimal(0)
-            for n in range(limit, degree, -1):
-                value = value * x + abs(log_coefficients[n])
-            return value * x**degree
-
-        lower = Decimal(0)
-        upper = Decimal(1)
-        while backward_error_bound(upper) < target:
-            upper *= 2
-        for _ in range(200):
-            midpoint = (lower + upper) / 2
-            if backward_error_bound(midpoint) <= target:
-                lower = midpoint
-            else:
-                upper = midpoint
-
-        candidate = float(lower)
-        if Decimal.from_float(candidate) > lower:
-            candidate = math.nextafter(candidate, 0.0)
-        return candidate
+def _select_tolerance(dtype, tol):
+    dtype_tolerance = _dtype_tolerance(dtype)
+    requested_tolerance = dtype_tolerance if tol is None else float(tol)
+    effective_tolerance = max(requested_tolerance, dtype_tolerance)
+    if not (
+        _SUPPORTED_TOLERANCES[0] <= effective_tolerance <= _SUPPORTED_TOLERANCES[-1]
+    ):
+        raise ValueError(
+            f"no theta values available for tolerance: {effective_tolerance}"
+        )
+    for table_tolerance in reversed(_SUPPORTED_TOLERANCES):
+        if table_tolerance <= effective_tolerance:
+            return table_tolerance
+    raise ValueError(f"no theta values available for tolerance: {effective_tolerance}")
 
 
 def _project_down(value, real_dtype):
@@ -90,16 +70,7 @@ def _project_down(value, real_dtype):
 
 @cache
 def _theta(dtype, tol, max_degree):
-    dtype = jnp.dtype(dtype)
-    try:
-        real_dtype = _REAL_DTYPE_BY_DTYPE[dtype]
-    except KeyError:
-        raise TypeError(f"unsupported vector-space dtype: {dtype}") from None
-
-    tolerance = (
-        _DEFAULT_TOLERANCE_BY_REAL_DTYPE[real_dtype] if tol is None else float(tol)
-    )
-    values = _THETA_VALUES_BY_TOLERANCE.get(tolerance)
-    if values is None:
-        values = tuple(_compute_theta(m, tolerance) for m in range(1, max_degree + 1))
+    real_dtype = _real_dtype(dtype)
+    tolerance = _select_tolerance(dtype, tol)
+    values = _THETA_VALUES_BY_TOLERANCE[tolerance]
     return tuple(_project_down(value, real_dtype) for value in values[:max_degree])

@@ -1,7 +1,8 @@
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
-from expax._theta import _compute_theta, _theta
+from expax._theta import _theta
 
 
 def test_double_theta_matches_reference_values():
@@ -24,10 +25,28 @@ def test_single_theta_matches_reference_values():
     )
 
 
-def test_computed_theta_recovers_reference_bound():
-    received = _compute_theta(30, 2.0**-53)
+def test_requested_tolerance_uses_supported_floor():
+    received = _theta(jnp.dtype(jnp.float64), 1e-10, 55)
+    expected = _theta(jnp.dtype(jnp.float64), 2.0**-53, 55)
 
-    np.testing.assert_allclose(received, 3.5396663487436895, rtol=1e-14)
+    assert received == expected
+
+
+def test_requested_tolerance_is_clamped_to_dtype_floor():
+    received = _theta(jnp.dtype(jnp.float64), 2.0**-60, 55)
+    expected = _theta(jnp.dtype(jnp.float64), 2.0**-53, 55)
+
+    assert received == expected
+
+
+def test_unsupported_tolerance_is_rejected():
+    with pytest.raises(ValueError, match="theta values"):
+        _theta(jnp.dtype(jnp.float64), 1e-2, 55)
+
+
+def test_dtype_without_a_supported_tolerance_is_rejected():
+    with pytest.raises(ValueError, match="theta values"):
+        _theta(np.float128, None, 55)
 
 
 def test_custom_theta_values_are_positive_and_increase_with_degree():
