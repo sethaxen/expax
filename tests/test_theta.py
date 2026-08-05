@@ -39,13 +39,15 @@ def test_requested_tolerance_is_clamped_to_dtype_floor():
     assert received == expected
 
 
-def test_unsupported_tolerance_is_rejected():
-    with pytest.raises(ValueError, match="theta values"):
-        _theta(jnp.dtype(jnp.float64), 1e-2, 55)
+def test_tolerance_above_table_uses_loosest_values():
+    received = _theta(jnp.dtype(jnp.float64), 1e-2, 55)
+    expected = _theta(jnp.dtype(jnp.float64), 2.0**-8, 55)
+
+    assert received == expected
 
 
 def test_dtype_without_a_supported_tolerance_is_rejected():
-    with pytest.raises(ValueError, match="theta values"):
+    with pytest.raises(ValueError, match="minimum supported tolerance"):
         _theta(np.float128, None, 55)
 
 

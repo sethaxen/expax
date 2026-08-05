@@ -46,16 +46,16 @@ def _select_tolerance(dtype, tol):
     dtype_tolerance = _dtype_tolerance(dtype)
     requested_tolerance = dtype_tolerance if tol is None else float(tol)
     effective_tolerance = max(requested_tolerance, dtype_tolerance)
-    if not (
-        _SUPPORTED_TOLERANCES[0] <= effective_tolerance <= _SUPPORTED_TOLERANCES[-1]
-    ):
+    if effective_tolerance < _SUPPORTED_TOLERANCES[0]:
         raise ValueError(
-            f"no theta values available for tolerance: {effective_tolerance}"
+            "requested tolerance is below the minimum supported tolerance: "
+            f"{_SUPPORTED_TOLERANCES[0]}"
         )
-    for table_tolerance in reversed(_SUPPORTED_TOLERANCES):
-        if table_tolerance <= effective_tolerance:
-            return table_tolerance
-    raise ValueError(f"no theta values available for tolerance: {effective_tolerance}")
+    return next(
+        table_tolerance
+        for table_tolerance in reversed(_SUPPORTED_TOLERANCES)
+        if table_tolerance <= effective_tolerance
+    )
 
 
 def _project_down(value, real_dtype):
