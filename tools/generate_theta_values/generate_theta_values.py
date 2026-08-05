@@ -26,6 +26,12 @@ VERIFICATION_SERIES_DEGREE = 1200
 ROOT_ACCURACY_BITS = 128
 ARB_GUARD_BITS = 128
 TOLERANCE_EXPONENTS = (11, 8, 24, 53)
+DTYPES_BY_TOLERANCE_EXPONENT = {
+    11: "float16",
+    8: "bfloat16",
+    24: "float32 / complex64",
+    53: "float64 / complex128",
+}
 OUTPUT_PATH = (
     Path(__file__).resolve().parents[2] / "src" / "expax" / "_generated_theta_values.py"
 )
@@ -154,11 +160,9 @@ def render_module(values: dict[float, tuple[float, ...]]) -> str:
         "_THETA_VALUES_BY_TOLERANCE: dict[float, tuple[float, ...]] = {",
     ]
     for exponent in TOLERANCE_EXPONENTS:
-        lines.append(f"    2.0**-{exponent}: (")
-        lines.extend(
-            f'        float.fromhex("{value.hex()}"),'
-            for value in values[2.0**-exponent]
-        )
+        dtype_names = DTYPES_BY_TOLERANCE_EXPONENT[exponent]
+        lines.append(f"    2.0**-{exponent}: (  # {dtype_names}")
+        lines.extend(f"        {value!r}," for value in values[2.0**-exponent])
         lines.append("    ),")
     lines.extend(("}", ""))
     return "\n".join(lines)
