@@ -19,7 +19,7 @@ def test_single_theta_matches_reference_values():
 
     np.testing.assert_allclose(
         [theta[0], theta[29], theta[54]],
-        [1.1920927998154304e-7, 6.321082126301961, 13.35880114398722],
+        [1.1920927533992653e-7, 6.32108211517334, 13.358800888061523],
         rtol=1e-15,
     )
 

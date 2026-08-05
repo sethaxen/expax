@@ -16,12 +16,13 @@ dependencies = [
     "jax>=0.4.38",
     "jaxtyping",
     "matfree>=0.6,<0.7",
+    "numpy",
 ]
 
 [dependency-groups]
 test = [
-    { include-group = "theta" },
     "pytest>=8,<10",
+    "scipy>=1.12",
 ]
 lint = [
     "prek>=0.3",
@@ -33,14 +34,6 @@ docs = [
     "sphinx>=8",
     "sphinx-autodoc2",
 ]
-theta = [
-    "ml-dtypes>=0.5",
-    "mpmath>=1.3",
-    "python-flint>=0.9",
-    "scipy>=1.12",
-    "sympy>=1.14",
-]
-
 [tool.hatch.build.targets.wheel]
 packages = ["src/expax"]
 
@@ -49,6 +42,7 @@ addopts = "-ra --strict-markers"
 testpaths = ["tests"]
 
 [tool.pyright]
+exclude = [".venv", "tools"]
 venv = ".venv"
 venvPath = "."
 
