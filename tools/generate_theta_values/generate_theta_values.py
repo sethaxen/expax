@@ -10,6 +10,7 @@ to enclose the positive roots of absolute-coefficient majorants. It solves a
 1,050-term majorant and requires a 1,200-term extension to select the same
 downward-rounded binary64 value before emitting it.
 
+Based on the approach used in
 Higham NJ, Al-Mohy AH. Computing matrix functions. Acta Numerica.
 2010;19:159-208. doi:10.1017/S0962492910000036.
 """

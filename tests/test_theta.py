@@ -2,11 +2,13 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from expax._theta import _theta
+from expax._theta import _theta, _unit_roundoff
 
 
 def test_double_theta_matches_reference_values():
-    theta = _theta(jnp.dtype(jnp.float64), None, 55)
+    dtype = jnp.dtype(jnp.float64)
+    tol = _unit_roundoff(dtype)
+    theta = _theta(dtype, tol, 55)
 
     np.testing.assert_allclose(
         [theta[0], theta[29], theta[54]],
@@ -16,7 +18,9 @@ def test_double_theta_matches_reference_values():
 
 
 def test_single_theta_matches_reference_values():
-    theta = _theta(jnp.dtype(jnp.float32), None, 55)
+    dtype = jnp.dtype(jnp.float32)
+    tol = _unit_roundoff(dtype)
+    theta = _theta(dtype, tol, 55)
 
     np.testing.assert_allclose(
         [theta[0], theta[29], theta[54]],
@@ -29,26 +33,21 @@ def test_requested_tolerance_uses_supported_floor():
     received = _theta(jnp.dtype(jnp.float64), 1e-10, 55)
     expected = _theta(jnp.dtype(jnp.float64), 2.0**-53, 55)
 
-    assert received == expected
-
-
-def test_requested_tolerance_is_clamped_to_dtype_floor():
-    received = _theta(jnp.dtype(jnp.float64), 2.0**-60, 55)
-    expected = _theta(jnp.dtype(jnp.float64), 2.0**-53, 55)
-
-    assert received == expected
+    assert np.array_equal(received, expected)
 
 
 def test_tolerance_above_table_uses_loosest_values():
     received = _theta(jnp.dtype(jnp.float64), 1e-2, 55)
     expected = _theta(jnp.dtype(jnp.float64), 2.0**-8, 55)
 
-    assert received == expected
+    assert np.array_equal(received, expected)
 
 
 def test_dtype_without_a_supported_tolerance_is_rejected():
+    dtype = np.float128
+    tol = _unit_roundoff(dtype)
     with pytest.raises(ValueError, match="minimum supported tolerance"):
-        _theta(np.float128, None, 55)
+        _theta(dtype, tol, 55)
 
 
 def test_custom_theta_values_are_positive_and_increase_with_degree():

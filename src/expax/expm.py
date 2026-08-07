@@ -15,7 +15,7 @@ from expax._planning import (
     _make_selector,
 )
 from expax._taylor import _taylor_action
-from expax._theta import _dtype_tolerance, _theta
+from expax._theta import _theta, _unit_roundoff
 from expax.normest import onenormest
 
 
@@ -128,13 +128,13 @@ def expm_multiply(
 
 
 def _resolve_tolerance(dtype, tol):
-    dtype_tolerance = _dtype_tolerance(dtype)
+    u = _unit_roundoff(dtype)
     if tol is None:
-        return dtype_tolerance
+        return u
     tolerance = float(tol)
     if not math.isfinite(tolerance) or tolerance <= 0:
         raise ValueError("tol must be finite and positive")
-    return max(tolerance, dtype_tolerance)
+    return max(tolerance, u)
 
 
 def _validate_static_options(max_degree, max_scaling):
