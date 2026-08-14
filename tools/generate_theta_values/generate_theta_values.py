@@ -32,6 +32,7 @@ is written.
 """
 
 import math
+from collections.abc import Iterable, Iterator
 from pathlib import Path
 
 from flint import arb, arb_poly, fmpq, fmpq_series
@@ -59,8 +60,8 @@ OUTPUT_PATH = (
 
 def exponential_taylor_backward_error_series(
     *, max_degree: int, series_degree: int
-) -> tuple[fmpq_series, ...]:
-    """Return the exact series ``h_m = log(exp(-x) T_m(x))``.
+) -> Iterator[fmpq_series]:
+    """Yield the exact series ``h_m = log(exp(-x) T_m(x))``.
 
     This is ``h_m`` from Appendix A immediately before equation (A.3). The
     recurrence below avoids multiplying two long series afresh for every degree:
@@ -71,36 +72,34 @@ def exponential_taylor_backward_error_series(
     A different approximation or matrix function can reuse the rest of this
     script by supplying its own exact backward-error series in place of these.
     """
-    old_cap = flint_ctx.cap
-    flint_ctx.cap = series_degree + 1
-    try:
-        factorials = [math.factorial(k) for k in range(series_degree + 1)]
-        exp_minus_x = [
-            fmpq(-1 if power % 2 else 1, factorials[power])
-            for power in range(series_degree + 1)
-        ]
+    series_precision = series_degree + 1
+    factorials = [math.factorial(k) for k in range(series_precision)]
+    exp_minus_x = [
+        fmpq(-1 if power % 2 else 1, factorials[power])
+        for power in range(series_precision)
+    ]
 
-        # At the start of degree m, this contains exp(-x) T_(m-1)(x).
-        scaled_approximant = exp_minus_x.copy()
-        backward_errors = []
-        for degree in range(1, max_degree + 1):
-            degree_factorial = factorials[degree]
-            for power in range(degree, series_degree + 1):
-                remainder = power - degree
-                scaled_approximant[power] += fmpq(
-                    -1 if remainder % 2 else 1,
-                    degree_factorial * factorials[remainder],
-                )
-
-            backward_errors.append(
-                fmpq_series(
-                    scaled_approximant,
-                    prec=series_degree + 1,
-                ).log()
+    # At the start of degree m, this contains exp(-x) T_(m-1)(x).
+    scaled_approximant = exp_minus_x.copy()
+    for degree in range(1, max_degree + 1):
+        degree_factorial = factorials[degree]
+        for power in range(degree, series_precision):
+            remainder = power - degree
+            scaled_approximant[power] += fmpq(
+                -1 if remainder % 2 else 1,
+                degree_factorial * factorials[remainder],
             )
-        return tuple(backward_errors)
-    finally:
-        flint_ctx.cap = old_cap
+
+        old_cap = flint_ctx.cap
+        flint_ctx.cap = series_precision
+        try:
+            backward_error = fmpq_series(
+                scaled_approximant,
+                prec=series_precision,
+            ).log()
+        finally:
+            flint_ctx.cap = old_cap
+        yield backward_error
 
 
 # Generic layer: turn exact h_m coefficients into certified theta values.
@@ -120,16 +119,31 @@ def relative_backward_error_majorant(
 
 
 def build_relative_backward_error_majorants(
-    backward_errors: tuple[fmpq_series, ...], *, max_power: int
-) -> tuple[arb_poly, ...]:
-    """Build one ``h_tilde_m(x) / x`` polynomial per approximation degree."""
+    backward_errors: Iterable[fmpq_series],
+    *,
+    max_power: int,
+    extended_max_power: int,
+) -> tuple[tuple[arb_poly, ...], tuple[arb_poly, ...]]:
+    """Build primary and extended majorants while consuming each series once."""
     old_prec = flint_ctx.prec
     flint_ctx.prec = ROOT_ACCURACY_BITS + ARB_GUARD_BITS
     try:
-        return tuple(
-            relative_backward_error_majorant(error, max_power=max_power)
-            for error in backward_errors
-        )
+        majorants = []
+        extended_majorants = []
+        for backward_error in backward_errors:
+            majorants.append(
+                relative_backward_error_majorant(
+                    backward_error,
+                    max_power=max_power,
+                )
+            )
+            extended_majorants.append(
+                relative_backward_error_majorant(
+                    backward_error,
+                    max_power=extended_max_power,
+                )
+            )
+        return tuple(majorants), tuple(extended_majorants)
     finally:
         flint_ctx.prec = old_prec
 
@@ -236,17 +250,13 @@ def render_module(values: dict[float, tuple[float, ...]]) -> str:
 
 
 def main() -> None:
-    backward_errors = exponential_taylor_backward_error_series(
-        max_degree=MAX_TAYLOR_DEGREE,
-        series_degree=BACKWARD_ERROR_VERIFICATION_TRUNCATION,
-    )
-    majorants = build_relative_backward_error_majorants(
-        backward_errors,
+    majorants, extended_majorants = build_relative_backward_error_majorants(
+        exponential_taylor_backward_error_series(
+            max_degree=MAX_TAYLOR_DEGREE,
+            series_degree=BACKWARD_ERROR_VERIFICATION_TRUNCATION,
+        ),
         max_power=BACKWARD_ERROR_TRUNCATION,
-    )
-    extended_majorants = build_relative_backward_error_majorants(
-        backward_errors,
-        max_power=BACKWARD_ERROR_VERIFICATION_TRUNCATION,
+        extended_max_power=BACKWARD_ERROR_VERIFICATION_TRUNCATION,
     )
 
     values = {}

@@ -71,15 +71,16 @@ be for a selected Taylor degree and tolerance.
 
 The generator follows the mathematical construction in three layers:
 
-1. `exponential_taylor_backward_error_series` constructs each `h_m` exactly
-   over the rationals. It updates `exp(-x) T_m(x)` incrementally using
+1. `exponential_taylor_backward_error_series` yields each `h_m` exactly over
+   the rationals. It updates `exp(-x) T_m(x)` incrementally using
 
    \[
    e^{-x}T_m(x)
      = e^{-x}T_{m-1}(x) + \frac{x^m}{m!}e^{-x},
    \]
 
-   which avoids recomputing a long product for every degree.
+   which avoids recomputing a long product for every degree. The solver builds
+   both majorants immediately, so only one large rational series is retained.
 2. The generic solver forms `h_tilde_m(x) / x`, encloses the positive solution
    where it equals the tolerance, and rounds that solution downward to
    binary64.
@@ -87,7 +88,7 @@ The generator follows the mathematical construction in three layers:
    used by Expax.
 
 To adapt the tool to another approximation or matrix function, implement a
-replacement for `exponential_taylor_backward_error_series` that returns its
+replacement for `exponential_taylor_backward_error_series` that yields its
 exact backward-error series `h_m`. The majorant construction, root enclosure,
 rounding, and rendering do not depend on the Taylor exponential.
 
