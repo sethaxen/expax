@@ -6,6 +6,7 @@ uv run --project tools/generate_theta_values --locked python \
 
 Higham NJ, Al-Mohy AH. Computing matrix functions. Acta Numerica.
 2010;19:159-208. doi:10.1017/S0962492910000036.
+Taylor construction: Appendix A, equation (A.3).
 """
 
 _THETA_VALUES_BY_TOLERANCE: dict[float, tuple[float, ...]] = {

@@ -5,14 +5,30 @@ Usage, from the repository root:
     uv run --project tools/generate_theta_values --locked python \\
         tools/generate_theta_values/generate_theta_values.py
 
-The generator builds its coefficients exactly as rational numbers and uses Arb
-to enclose the positive roots of absolute-coefficient majorants. It solves a
-1,050-term majorant and requires a 1,200-term extension to select the same
-downward-rounded binary64 value before emitting it.
+For the degree-m Taylor polynomial ``T_m(x)``, define the backward-error series
 
-Based on the approach used in
-Higham NJ, Al-Mohy AH. Computing matrix functions. Acta Numerica.
-2010;19:159-208. doi:10.1017/S0962492910000036.
+    h_m(x) = log(exp(-x) T_m(x)) = sum(c_k x**k, k=m+1,...)
+
+and its absolute-coefficient majorant
+
+    h_tilde_m(x) = sum(abs(c_k) x**k, k=m+1,...).
+
+The generated threshold is the largest theta for which
+
+    h_tilde_m(theta) / theta <= tolerance.
+
+This is the Taylor specialization in Appendix A, especially equation (A.3), of
+the backward-error analysis in Section 5 of
+
+Higham NJ, Al-Mohy AH. Computing matrix functions. Acta Numerica. 2010;19:159-208.
+doi: 10.1017/S0962492910000036.
+eprint: https://eprints.maths.manchester.ac.uk/1406/.
+
+The paper uses unit roundoff as the tolerance. This script applies the same
+construction to every tolerance supported by Expax. It builds ``h_m`` exactly
+over the rationals, encloses each theta with Arb, and rounds the result downward
+to binary64. A longer series must select the same binary64 value before the table
+is written.
 """
 
 import math
@@ -21,9 +37,9 @@ from pathlib import Path
 from flint import arb, arb_poly, fmpq, fmpq_series
 from flint import ctx as flint_ctx
 
-MAX_DEGREE = 55
-SERIES_DEGREE = 1050
-VERIFICATION_SERIES_DEGREE = 1200
+MAX_TAYLOR_DEGREE = 55
+BACKWARD_ERROR_TRUNCATION = 1050
+BACKWARD_ERROR_VERIFICATION_TRUNCATION = 1200
 ROOT_ACCURACY_BITS = 128
 ARB_GUARD_BITS = 128
 TOLERANCE_EXPONENTS = (11, 8, 24, 53)
@@ -38,45 +54,88 @@ OUTPUT_PATH = (
 )
 
 
-def build_majorants() -> tuple[tuple[arb_poly, ...], tuple[arb_poly, ...]]:
-    """Build primary and extended majorants from one exact rational series."""
+# Approximation-specific layer: derive h_m for the exponential Taylor polynomial.
+
+
+def exponential_taylor_backward_error_series(
+    *, max_degree: int, series_degree: int
+) -> tuple[fmpq_series, ...]:
+    """Return the exact series ``h_m = log(exp(-x) T_m(x))``.
+
+    This is ``h_m`` from Appendix A immediately before equation (A.3). The
+    recurrence below avoids multiplying two long series afresh for every degree:
+
+        exp(-x) T_m(x)
+            = exp(-x) T_(m-1)(x) + x**m exp(-x) / m!.
+
+    A different approximation or matrix function can reuse the rest of this
+    script by supplying its own exact backward-error series in place of these.
+    """
     old_cap = flint_ctx.cap
-    old_prec = flint_ctx.prec
-    flint_ctx.cap = VERIFICATION_SERIES_DEGREE + 1
-    flint_ctx.prec = ROOT_ACCURACY_BITS + ARB_GUARD_BITS
+    flint_ctx.cap = series_degree + 1
     try:
-        factorials = [math.factorial(k) for k in range(VERIFICATION_SERIES_DEGREE + 1)]
-        coefficients = [fmpq(1)]
-        coefficients.extend(
-            fmpq(-1 if k % 2 else 1, factorials[k])
-            for k in range(1, VERIFICATION_SERIES_DEGREE + 1)
-        )
-        majorants = []
-        verification_majorants = []
-        for degree in range(1, MAX_DEGREE + 1):
-            coefficients[degree] = fmpq(0)
-            denominator_left = factorials[degree]
-            for k in range(degree + 1, VERIFICATION_SERIES_DEGREE + 1):
-                remainder = k - degree
-                coefficients[k] += fmpq(
+        factorials = [math.factorial(k) for k in range(series_degree + 1)]
+        exp_minus_x = [
+            fmpq(-1 if power % 2 else 1, factorials[power])
+            for power in range(series_degree + 1)
+        ]
+
+        # At the start of degree m, this contains exp(-x) T_(m-1)(x).
+        scaled_approximant = exp_minus_x.copy()
+        backward_errors = []
+        for degree in range(1, max_degree + 1):
+            degree_factorial = factorials[degree]
+            for power in range(degree, series_degree + 1):
+                remainder = power - degree
+                scaled_approximant[power] += fmpq(
                     -1 if remainder % 2 else 1,
-                    denominator_left * factorials[remainder],
+                    degree_factorial * factorials[remainder],
                 )
-            logarithm = fmpq_series(
-                coefficients,
-                prec=VERIFICATION_SERIES_DEGREE + 1,
-            ).log()
-            absolute_coefficients = [abs(value) for value in logarithm.coeffs()[1:]]
-            majorants.append(arb_poly(absolute_coefficients[:SERIES_DEGREE]))
-            verification_majorants.append(arb_poly(absolute_coefficients))
-        return tuple(majorants), tuple(verification_majorants)
+
+            backward_errors.append(
+                fmpq_series(
+                    scaled_approximant,
+                    prec=series_degree + 1,
+                ).log()
+            )
+        return tuple(backward_errors)
     finally:
-        flint_ctx.prec = old_prec
         flint_ctx.cap = old_cap
 
 
-def _classify_enclosure(value: arb, tolerance: fmpq) -> bool:
-    """Return whether an Arb enclosure is rigorously at or below tolerance."""
+# Generic layer: turn exact h_m coefficients into certified theta values.
+
+
+def relative_backward_error_majorant(
+    backward_error: fmpq_series, *, max_power: int
+) -> arb_poly:
+    """Return the truncated majorant ``h_tilde_m(x) / x``.
+
+    Dividing by ``x`` makes theta the positive solution of
+    ``majorant(theta) = tolerance``, exactly as in equation (A.3).
+    """
+    if backward_error.prec <= max_power:
+        raise ValueError("backward-error series is shorter than max_power")
+    return arb_poly([abs(backward_error[power]) for power in range(1, max_power + 1)])
+
+
+def build_relative_backward_error_majorants(
+    backward_errors: tuple[fmpq_series, ...], *, max_power: int
+) -> tuple[arb_poly, ...]:
+    """Build one ``h_tilde_m(x) / x`` polynomial per approximation degree."""
+    old_prec = flint_ctx.prec
+    flint_ctx.prec = ROOT_ACCURACY_BITS + ARB_GUARD_BITS
+    try:
+        return tuple(
+            relative_backward_error_majorant(error, max_power=max_power)
+            for error in backward_errors
+        )
+    finally:
+        flint_ctx.prec = old_prec
+
+
+def _enclosure_is_at_most(value: arb, tolerance: fmpq) -> bool:
+    """Classify an Arb enclosure without making an uncertified comparison."""
     target = arb(tolerance)
     if value.upper() <= target:
         return True
@@ -85,29 +144,19 @@ def _classify_enclosure(value: arb, tolerance: fmpq) -> bool:
     raise ArithmeticError("unable to classify Arb polynomial enclosure")
 
 
-def bracket_theta_values(
-    majorants: tuple[arb_poly, ...], tolerance: fmpq
-) -> tuple[tuple[fmpq, fmpq], ...]:
-    """Enclose every positive majorant root in a sufficiently narrow interval."""
-    old_prec = flint_ctx.prec
-    flint_ctx.prec = ROOT_ACCURACY_BITS + ARB_GUARD_BITS
-    try:
-        brackets = []
-        for majorant in majorants:
-            lower = fmpq(0)
-            upper = fmpq(1)
-            while _classify_enclosure(majorant(arb(upper)), tolerance):
-                upper *= 2
-            while upper - lower > lower * fmpq(1, 2**ROOT_ACCURACY_BITS):
-                midpoint = (lower + upper) / 2
-                if _classify_enclosure(majorant(arb(midpoint)), tolerance):
-                    lower = midpoint
-                else:
-                    upper = midpoint
-            brackets.append((lower, upper))
-        return tuple(brackets)
-    finally:
-        flint_ctx.prec = old_prec
+def bracket_theta(majorant: arb_poly, tolerance: fmpq) -> tuple[fmpq, fmpq]:
+    """Enclose the positive solution of ``majorant(theta) = tolerance``."""
+    lower = fmpq(0)
+    upper = fmpq(1)
+    while _enclosure_is_at_most(majorant(arb(upper)), tolerance):
+        upper *= 2
+    while upper - lower > lower * fmpq(1, 2**ROOT_ACCURACY_BITS):
+        midpoint = (lower + upper) / 2
+        if _enclosure_is_at_most(majorant(arb(midpoint)), tolerance):
+            lower = midpoint
+        else:
+            upper = midpoint
+    return lower, upper
 
 
 def _as_fmpq(value: float) -> fmpq:
@@ -115,7 +164,8 @@ def _as_fmpq(value: float) -> fmpq:
     return fmpq(numerator, denominator)
 
 
-def binary64_below(lower: fmpq, upper: fmpq) -> float:
+def downward_binary64(lower: fmpq, upper: fmpq) -> float:
+    """Return the greatest binary64 value proved to lie below the root."""
     candidate = float(lower)
     if _as_fmpq(candidate) > lower:
         candidate = math.nextafter(candidate, 0.0)
@@ -125,28 +175,43 @@ def binary64_below(lower: fmpq, upper: fmpq) -> float:
     return candidate
 
 
-def verify_binary64_convergence(
+def verify_extended_majorants(
     values: tuple[float, ...],
     majorants: tuple[arb_poly, ...],
     tolerance: fmpq,
 ) -> None:
-    """Require the extended majorants to select the same binary64 values."""
+    """Require longer majorants to select the same downward binary64 values."""
+    for value, majorant in zip(values, majorants, strict=True):
+        lower = _as_fmpq(value)
+        upper = _as_fmpq(math.nextafter(value, math.inf))
+        if not _enclosure_is_at_most(majorant(arb(lower)), tolerance):
+            raise ArithmeticError("theta values did not converge")
+        if _enclosure_is_at_most(majorant(arb(upper)), tolerance):
+            raise ArithmeticError("theta values did not converge")
+
+
+def compute_theta_values(
+    majorants: tuple[arb_poly, ...],
+    extended_majorants: tuple[arb_poly, ...],
+    tolerance: fmpq,
+) -> tuple[float, ...]:
+    """Solve, round, and verify theta for every supplied approximation degree."""
     old_prec = flint_ctx.prec
     flint_ctx.prec = ROOT_ACCURACY_BITS + ARB_GUARD_BITS
     try:
-        for value, majorant in zip(values, majorants, strict=True):
-            lower = _as_fmpq(value)
-            upper = _as_fmpq(math.nextafter(value, math.inf))
-            if not _classify_enclosure(majorant(arb(lower)), tolerance):
-                raise ArithmeticError("theta values did not converge")
-            if _classify_enclosure(majorant(arb(upper)), tolerance):
-                raise ArithmeticError("theta values did not converge")
+        brackets = tuple(bracket_theta(majorant, tolerance) for majorant in majorants)
+        values = tuple(downward_binary64(*bracket) for bracket in brackets)
+        verify_extended_majorants(values, extended_majorants, tolerance)
+        return values
     finally:
         flint_ctx.prec = old_prec
 
 
+# Output-specific layer: render the table consumed by Expax at runtime.
+
+
 def render_module(values: dict[float, tuple[float, ...]]) -> str:
-    """Render the generated table with exact binary64 spellings."""
+    """Render the generated table with exact binary64 decimal spellings."""
     lines = [
         '"""Generated theta values; do not edit this file by hand.',
         "",
@@ -156,6 +221,7 @@ def render_module(values: dict[float, tuple[float, ...]]) -> str:
         "",
         "Higham NJ, Al-Mohy AH. Computing matrix functions. Acta Numerica.",
         "2010;19:159-208. doi:10.1017/S0962492910000036.",
+        "Taylor construction: Appendix A, equation (A.3).",
         '"""',
         "",
         "_THETA_VALUES_BY_TOLERANCE: dict[float, tuple[float, ...]] = {",
@@ -170,14 +236,28 @@ def render_module(values: dict[float, tuple[float, ...]]) -> str:
 
 
 def main() -> None:
-    majorants, verification_majorants = build_majorants()
+    backward_errors = exponential_taylor_backward_error_series(
+        max_degree=MAX_TAYLOR_DEGREE,
+        series_degree=BACKWARD_ERROR_VERIFICATION_TRUNCATION,
+    )
+    majorants = build_relative_backward_error_majorants(
+        backward_errors,
+        max_power=BACKWARD_ERROR_TRUNCATION,
+    )
+    extended_majorants = build_relative_backward_error_majorants(
+        backward_errors,
+        max_power=BACKWARD_ERROR_VERIFICATION_TRUNCATION,
+    )
+
     values = {}
     for exponent in TOLERANCE_EXPONENTS:
         tolerance = fmpq(1, 2**exponent)
-        brackets = bracket_theta_values(majorants, tolerance)
-        candidates = tuple(binary64_below(lower, upper) for lower, upper in brackets)
-        verify_binary64_convergence(candidates, verification_majorants, tolerance)
-        values[2.0**-exponent] = candidates
+        values[2.0**-exponent] = compute_theta_values(
+            majorants,
+            extended_majorants,
+            tolerance,
+        )
+
     rendered = render_module(values)
     if not OUTPUT_PATH.exists() or OUTPUT_PATH.read_text(encoding="utf-8") != rendered:
         OUTPUT_PATH.write_text(rendered, encoding="utf-8")
