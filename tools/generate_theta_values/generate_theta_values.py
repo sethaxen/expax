@@ -33,6 +33,8 @@ is written.
 
 import math
 from collections.abc import Iterable, Iterator
+from itertools import accumulate
+from operator import mul
 from pathlib import Path
 
 from flint import arb, arb_poly, fmpq, fmpq_series
@@ -73,7 +75,7 @@ def exponential_taylor_backward_error_series(
     script by supplying its own exact backward-error series in place of these.
     """
     series_precision = series_degree + 1
-    factorials = [math.factorial(k) for k in range(series_precision)]
+    factorials = list(accumulate(range(1, series_precision), mul, initial=1))
     exp_minus_x = [
         fmpq(-1 if power % 2 else 1, factorials[power])
         for power in range(series_precision)
