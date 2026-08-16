@@ -33,12 +33,13 @@ is written.
 
 import math
 from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from itertools import accumulate
 from operator import mul
 from pathlib import Path
 
+import flint
 from flint import arb, arb_poly, fmpq, fmpq_series
-from flint import ctx as flint_ctx
 
 MAX_TAYLOR_DEGREE = 55
 BACKWARD_ERROR_TRUNCATION = 1050
@@ -55,6 +56,17 @@ DTYPES_BY_TOLERANCE_EXPONENT = {
 OUTPUT_PATH = (
     Path(__file__).resolve().parents[2] / "src" / "expax" / "_generated_theta_values.py"
 )
+
+
+@contextmanager
+def _workcap(cap: int) -> Iterator[None]:
+    """Temporarily set FLINT's global power-series precision."""
+    old_cap = flint.ctx.cap
+    flint.ctx.cap = cap
+    try:
+        yield
+    finally:
+        flint.ctx.cap = old_cap
 
 
 # Approximation-specific layer: derive h_m for the exponential Taylor polynomial.
@@ -92,15 +104,11 @@ def exponential_taylor_backward_error_series(
                 degree_factorial * factorials[remainder],
             )
 
-        old_cap = flint_ctx.cap
-        flint_ctx.cap = series_precision
-        try:
+        with _workcap(series_precision):
             backward_error = fmpq_series(
                 scaled_approximant,
                 prec=series_precision,
             ).log()
-        finally:
-            flint_ctx.cap = old_cap
         yield backward_error
 
 
@@ -127,9 +135,7 @@ def build_relative_backward_error_majorants(
     extended_max_power: int,
 ) -> tuple[tuple[arb_poly, ...], tuple[arb_poly, ...]]:
     """Build primary and extended majorants while consuming each series once."""
-    old_prec = flint_ctx.prec
-    flint_ctx.prec = ROOT_ACCURACY_BITS + ARB_GUARD_BITS
-    try:
+    with flint.ctx.workprec(ROOT_ACCURACY_BITS + ARB_GUARD_BITS):
         majorants = []
         extended_majorants = []
         for backward_error in backward_errors:
@@ -146,8 +152,6 @@ def build_relative_backward_error_majorants(
                 )
             )
         return tuple(majorants), tuple(extended_majorants)
-    finally:
-        flint_ctx.prec = old_prec
 
 
 def _enclosure_is_at_most(value: arb, tolerance: fmpq) -> bool:
@@ -212,15 +216,11 @@ def compute_theta_values(
     tolerance: fmpq,
 ) -> tuple[float, ...]:
     """Solve, round, and verify theta for every supplied approximation degree."""
-    old_prec = flint_ctx.prec
-    flint_ctx.prec = ROOT_ACCURACY_BITS + ARB_GUARD_BITS
-    try:
+    with flint.ctx.workprec(ROOT_ACCURACY_BITS + ARB_GUARD_BITS):
         brackets = tuple(bracket_theta(majorant, tolerance) for majorant in majorants)
         values = tuple(downward_binary64(*bracket) for bracket in brackets)
         verify_extended_majorants(values, extended_majorants, tolerance)
         return values
-    finally:
-        flint_ctx.prec = old_prec
 
 
 # Output-specific layer: render the table consumed by Expax at runtime.
