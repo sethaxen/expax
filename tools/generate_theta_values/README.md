@@ -84,7 +84,7 @@ The script has three main components:
 
    which avoids recomputing a long product for every degree.
    The solver builds both majorants immediately, so only one large rational series is retained.
-2. The generic solver forms $\tilde{h}_m(x) / x$, encloses the positive solution where it equals the tolerance, and rounds that solution downward to binary64.
+2. The generic solver forms $\tilde{h}_m(x) / x$, encloses the positive solution where it equals the tolerance, and rounds that solution downward to float64.
 3. The output layer labels the tolerance tables and renders the Python module used by `expax`.
 
 > [!NOTE]
@@ -92,7 +92,7 @@ The script has three main components:
 > Just replace `exponential_taylor_backward_error_series` with a generator that yields the exact backward-error series $h_m$ for the corresponding function/approximation.
 
 In practice, we must truncate $h_m$.
-We use a 1,050-term truncation for the main calculation and validate that a 1,200-term truncation yields a $\theta_m$ value that rounds downward to the same binary64 value.
+We use a 1,050-term truncation for the main calculation and validate that a 1,200-term truncation yields a $\theta_m$ value that rounds downward to the same float64 value.
 This inexpensive check guards against a truncation that is too short to determine the emitted value.
 
 ## References
