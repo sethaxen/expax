@@ -25,7 +25,7 @@ doi: 10.1017/S0962492910000036.
 eprint: https://eprints.maths.manchester.ac.uk/1406/.
 
 The paper uses unit roundoff as the tolerance. This script applies the same
-construction to every tolerance supported by Expax. It builds ``h_m`` exactly
+construction to every tolerance supported by ``expax``. It builds ``h_m`` exactly
 over the rationals, encloses each theta with Arb, and rounds the result downward
 to binary64. A longer series must select the same binary64 value before the table
 is written.
@@ -77,8 +77,7 @@ def exponential_taylor_backward_error_series(
 ) -> Iterator[fmpq_series]:
     """Yield the exact series ``h_m = log(exp(-x) T_m(x))``.
 
-    This is ``h_m`` from Appendix A immediately before equation (A.3). The
-    recurrence below avoids multiplying two long series afresh for every degree:
+    This recurrence avoids multiplying two long series afresh for every degree:
 
         exp(-x) T_m(x)
             = exp(-x) T_(m-1)(x) + x**m exp(-x) / m!.
@@ -94,7 +93,7 @@ def exponential_taylor_backward_error_series(
     ]
 
     # At the start of degree m, this contains exp(-x) T_(m-1)(x).
-    scaled_approximant = exp_minus_x.copy()
+    scaled_approximant = exp_minus_x
     for degree in range(1, max_degree + 1):
         degree_factorial = factorials[degree]
         for power in range(degree, series_precision):
@@ -132,12 +131,12 @@ def build_relative_backward_error_majorants(
     backward_errors: Iterable[fmpq_series],
     *,
     max_power: int,
-    extended_max_power: int,
+    max_power_validation: int,
 ) -> tuple[tuple[arb_poly, ...], tuple[arb_poly, ...]]:
     """Build primary and extended majorants while consuming each series once."""
     with flint.ctx.workprec(ROOT_ACCURACY_BITS + ARB_GUARD_BITS):
         majorants = []
-        extended_majorants = []
+        majorants_validation = []
         for backward_error in backward_errors:
             majorants.append(
                 relative_backward_error_majorant(
@@ -145,13 +144,13 @@ def build_relative_backward_error_majorants(
                     max_power=max_power,
                 )
             )
-            extended_majorants.append(
+            majorants_validation.append(
                 relative_backward_error_majorant(
                     backward_error,
-                    max_power=extended_max_power,
+                    max_power=max_power_validation,
                 )
             )
-        return tuple(majorants), tuple(extended_majorants)
+        return tuple(majorants), tuple(majorants_validation)
 
 
 def _enclosure_is_at_most(value: arb, tolerance: fmpq) -> bool:
@@ -195,7 +194,7 @@ def downward_binary64(lower: fmpq, upper: fmpq) -> float:
     return candidate
 
 
-def verify_extended_majorants(
+def validate_majorants(
     values: tuple[float, ...],
     majorants: tuple[arb_poly, ...],
     tolerance: fmpq,
@@ -212,18 +211,18 @@ def verify_extended_majorants(
 
 def compute_theta_values(
     majorants: tuple[arb_poly, ...],
-    extended_majorants: tuple[arb_poly, ...],
+    majorants_validation: tuple[arb_poly, ...],
     tolerance: fmpq,
 ) -> tuple[float, ...]:
     """Solve, round, and verify theta for every supplied approximation degree."""
     with flint.ctx.workprec(ROOT_ACCURACY_BITS + ARB_GUARD_BITS):
         brackets = tuple(bracket_theta(majorant, tolerance) for majorant in majorants)
         values = tuple(downward_binary64(*bracket) for bracket in brackets)
-        verify_extended_majorants(values, extended_majorants, tolerance)
+        validate_majorants(values, majorants_validation, tolerance)
         return values
 
 
-# Output-specific layer: render the table consumed by Expax at runtime.
+# Output-specific layer: render the table consumed by expax at runtime.
 
 
 def render_module(values: dict[float, tuple[float, ...]]) -> str:
@@ -252,13 +251,13 @@ def render_module(values: dict[float, tuple[float, ...]]) -> str:
 
 
 def main() -> None:
-    majorants, extended_majorants = build_relative_backward_error_majorants(
+    majorants, majorants_validation = build_relative_backward_error_majorants(
         exponential_taylor_backward_error_series(
             max_degree=MAX_TAYLOR_DEGREE,
             series_degree=BACKWARD_ERROR_VERIFICATION_TRUNCATION,
         ),
         max_power=BACKWARD_ERROR_TRUNCATION,
-        extended_max_power=BACKWARD_ERROR_VERIFICATION_TRUNCATION,
+        max_power_validation=BACKWARD_ERROR_VERIFICATION_TRUNCATION,
     )
 
     values = {}
@@ -266,7 +265,7 @@ def main() -> None:
         tolerance = fmpq(1, 2**exponent)
         values[2.0**-exponent] = compute_theta_values(
             majorants,
-            extended_majorants,
+            majorants_validation,
             tolerance,
         )
 
