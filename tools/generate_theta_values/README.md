@@ -1,7 +1,8 @@
 # Generate theta values
 
-This tool generates the theta values imported by `expax._theta`.
-It is an isolated, locked project because none of its arbitrary-precision dependencies are needed when using Expax.
+This tool generates the $\theta$ values imported by `expax._theta`.
+
+## Execution
 
 From the repository root, run:
 
@@ -9,65 +10,59 @@ From the repository root, run:
 uv run --project tools/generate_theta_values --locked python tools/generate_theta_values/generate_theta_values.py
 ```
 
-The command writes `src/expax/_generated_theta_values.py`.
-Inspect its diff before accepting regenerated values.
+This command overwrites `src/expax/_generated_theta_values.py`, and `git diff` can be used to inspect any changes to the values.
 
-## Mathematical construction
+## Mathematical background
 
-For a Taylor degree `m`, Expax approximates the exponential with
+`expax` approximates the exponential with the degree $m$ Taylor polynomial
 
 \[
-T_m(x) = \sum_{j=0}^{m} \frac{x^j}{j!}.
+\exp(x) \approx T_m(x) := \sum_{j=0}^{m} \frac{x^j}{j!}
 \]
 
-Section 5 of Higham and Al-Mohy derives approximation thresholds from relative backward error.
-Appendix A applies that construction to Taylor approximants.
-Immediately before equation (A.3), the paper defines
+The following is based on Section 5 and the appendix of [^1], which derives approximation thresholds from relative backward error.
+Let $h_m$ denote the backward error of the Taylor approximation, defined by
 
 \[
 h_m(x)
-  = \log\!\left(e^{-x}T_m(x)\right)
-  = \sum_{k=m+1}^{\infty} c_k x^k
+  := \log\!\left(\exp(-x)T_m(x)\right)
+  = \sum_{k=m+1}^{\infty} c_k x^k.
 \]
 
-and the absolute-coefficient majorant
+For a scalar or matrix argument $B$, the Taylor approximation is the exact exponential of the perturbed argument $B + h_m(B)$.
+Bounding $h_m(B)$ therefore certifies the backward error of the approximation.
+Let $\widetilde h_m$ denote the majorant of $h_m$ for positive scalar argument, defined by
 
 \[
-\widetilde h_m(x) = \sum_{k=m+1}^{\infty} |c_k|x^k.
+\widetilde h_m(x) := \sum_{k=m+1}^{\infty} |c_k|x^k, \quad x > 0.
 \]
 
-For a matrix `B`, the same power series gives
-
-\[
-T_m(B)=\exp\!\left(B+h_m(B)\right),
-\]
-
-so `h_m(B)` is the backward perturbation: the approximation is the exact exponential of `B + h_m(B)`.
-For any submultiplicative matrix norm,
+For a square matrix $B$ and any submultiplicative matrix norm $\lVert \cdot \rVert$,
 
 \[
 \begin{aligned}
 \lVert h_m(B)\rVert
 &\leq \sum_{k=m+1}^{\infty}|c_k|\,\lVert B^k\rVert \\
 &\leq \sum_{k=m+1}^{\infty}|c_k|\,\lVert B\rVert^k
- = \widetilde h_m(\lVert B\rVert).
+ = \widetilde h_m(\lVert B\rVert),
 \end{aligned}
 \]
 
-Thus `h_tilde_m` is not evaluated at the matrix itself.
-It is a scalar, cancellation-free upper bound evaluated at the nonnegative size `||B||`.
+so the relative backward error is bounded by
+\[
+\frac{\lVert h_m(B)\rVert}{\lVert B\rVert} \leq \frac{\widetilde h_m(\lVert B\rVert)}{\lVert B\rVert}.
+\]
 
-The theta value for degree `m` and tolerance `tol` is therefore
+$\theta_m$ is the largest scalar norm threshold for which the relative backward error of the degree-$m$ approximation does not exceed a given tolerance `tol`:
 
 \[
 \theta_m
   = \max\left\{\theta:
-      \frac{\widetilde h_m(\theta)}{\theta} \leq \mathrm{tol}
+      \frac{\widetilde h_m(\theta)}{\theta} \leq \mathrm{tol}, \;\theta > 0
     \right\}.
 \]
 
-This is equation (A.3), with the paper's double-precision unit roundoff replaced by each tolerance supported by Expax.
-Because `h_tilde_m(r) / r` has nonnegative coefficients and is nondecreasing for `r >= 0`,
+Because $\widetilde h_m(r) / r$ has nonnegative coefficients, it is nondecreasing for $r \geq 0$, so
 
 \[
 \lVert B\rVert \leq \theta_m
@@ -75,25 +70,12 @@ Because `h_tilde_m(r) / r` has nonnegative coefficients and is nondecreasing for
 \frac{\lVert h_m(B)\rVert}{\lVert B\rVert}\leq\mathrm{tol}.
 \]
 
-The threshold applies to Expax's scaled action as well as to the paper's scaling-and-squaring setting.
-With Expax's trace shift `mu`, let `B = t(A - mu I) / s`.
-Expax applies the scalar factor `exp(t mu / s)` separately at each step, so formally
-
-\[
-\left(e^{t\mu/s}T_m(B)\right)^s
-  = \exp\!\left(tA + s h_m(B)\right).
-\]
-
-Consequently, the relative backward error is controlled by the same ratio `h_tilde_m(||B||) / ||B||`.
-For each degree `m`, theta is therefore the largest safe scaled-step size.
-The planner uses it to choose a scaling count—simply `max(ceil(|t| ||A - mu I|| / theta_m), 1)` when using the norm bound, or an analogous quantity from estimated power norms—and minimizes the resulting Taylor work `m * s` over the available degrees.
-
 ## Script structure
 
-The generator follows the mathematical construction in three layers:
+The script has three main components:
 
-1. `exponential_taylor_backward_error_series` yields each `h_m` exactly over the rationals.
-   It updates `exp(-x) T_m(x)` incrementally using
+1. `exponential_taylor_backward_error_series` yields each $h_m$ exactly over the rationals.
+   It updates $e^{-x} T_m(x)$ incrementally using
 
    \[
    e^{-x}T_m(x)
@@ -102,18 +84,17 @@ The generator follows the mathematical construction in three layers:
 
    which avoids recomputing a long product for every degree.
    The solver builds both majorants immediately, so only one large rational series is retained.
-2. The generic solver forms `h_tilde_m(x) / x`, encloses the positive solution where it equals the tolerance, and rounds that solution downward to binary64.
-3. The output layer labels the tolerance tables and renders the Python module used by Expax.
+2. The generic solver forms $\tilde{h}_m(x) / x$, encloses the positive solution where it equals the tolerance, and rounds that solution downward to binary64.
+3. The output layer labels the tolerance tables and renders the Python module used by `expax`.
 
-To adapt the tool to another approximation or matrix function, implement a replacement for `exponential_taylor_backward_error_series` that yields its exact backward-error series `h_m`.
-The majorant construction, root enclosure, rounding, and rendering do not depend on the Taylor exponential.
+> [!NOTE]
+It is straightforward to adapt this tool to generate $\theta$ values for a different approximation or matrix function.
+Just replace `exponential_taylor_backward_error_series` with a generator that yields the exact backward-error series $h_m$ for the corresponding function/approximation.
 
-The main calculation truncates each backward-error series after 1,050 powers.
-During the same run, a 1,200-power extension must put the root in the same binary64 interval.
+In practice, we must truncate $h_m$.
+We use a 1,050-term truncation for the main calculation and validate that a 1,200-term truncation yields a $\theta_m$ value that rounds downward to the same binary64 value.
 This inexpensive check guards against a truncation that is too short to determine the emitted value.
 
-## Reference
+## References
 
-Higham NJ, Al-Mohy AH. Computing matrix functions. *Acta Numerica*. 2010;19:159–208. [doi:10.1017/S0962492910000036](https://doi.org/10.1017/S0962492910000036).
-See Section 5—particularly Lemma 5.1 and the discussion following equation (5.4)—and Appendix A, especially equation (A.3).
-A freely available [author eprint](https://eprints.maths.manchester.ac.uk/1406/) is also available.
+[^1]: Higham NJ, Al-Mohy AH. Computing matrix functions. *Acta Numerica*. 2010;19:159–208. doi:[10.1017/S0962492910000036](https://doi.org/10.1017/S0962492910000036). [eprint](https://eprints.maths.manchester.ac.uk/1406/).
