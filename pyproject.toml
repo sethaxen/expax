@@ -16,6 +16,7 @@ dependencies = [
     "jax>=0.4.38",
     "jaxtyping",
     "matfree>=0.6,<0.7",
+    "numpy",
 ]
 
 [dependency-groups]
@@ -33,7 +34,6 @@ docs = [
     "sphinx>=8",
     "sphinx-autodoc2",
 ]
-
 [tool.hatch.build.targets.wheel]
 packages = ["src/expax"]
 
@@ -42,6 +42,7 @@ addopts = "-ra --strict-markers"
 testpaths = ["tests"]
 
 [tool.pyright]
+exclude = [".venv", "tools"]
 venv = ".venv"
 venvPath = "."
 
