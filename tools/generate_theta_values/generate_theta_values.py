@@ -32,7 +32,7 @@ is written.
 """
 
 import math
-from collections.abc import Iterable, Iterator
+from collections.abc import Generator, Iterable, Iterator
 from contextlib import contextmanager
 from itertools import accumulate
 from operator import mul
@@ -59,7 +59,7 @@ OUTPUT_PATH = (
 
 
 @contextmanager
-def _workcap(cap: int) -> Iterator[None]:
+def _workcap(cap: int) -> Generator[None, None, None]:
     """Temporarily set FLINT's global power-series precision."""
     old_cap = flint.ctx.cap
     flint.ctx.cap = cap
