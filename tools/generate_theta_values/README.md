@@ -92,7 +92,7 @@ The script has three main components:
 > Just replace `exponential_taylor_backward_error_series` with a generator that yields the exact backward-error series $h_m$ for the corresponding function/approximation.
 
 In practice, we must truncate $h_m$.
-We use a 1,050-term truncation for the main calculation and validate that a 1,200-term truncation yields a $\theta_m$ value that rounds downward to the same float64 value.
+We use a 1,024-term truncation to calculate the $\theta_m$ values and validate that expanding the truncation by 200 additional terms produces the exact same values.
 This inexpensive check guards against a truncation that is too short to determine the emitted value.
 
 ## References
