@@ -29,7 +29,7 @@ h_m(x)
   = \sum_{k=m+1}^{\infty} c_k x^k.
 \]
 
-For a scalar or matrix argument $B$, the Taylor approximation is the exact exponential of the perturbed argument $B + h_m(B)$.
+For a scalar or matrix argument $B$ within the convergence domain of this power series, the Taylor approximation is the exact exponential of the perturbed argument $B + h_m(B)$.
 Bounding $h_m(B)$ therefore certifies the backward error of the approximation.
 Let $\widetilde h_m$ denote the majorant of $h_m$ for positive scalar argument, defined by
 
@@ -88,8 +88,8 @@ The script has three main components:
 3. The output layer labels the tolerance tables and renders the Python module used by `expax`.
 
 > [!NOTE]
-It is straightforward to adapt this tool to generate $\theta$ values for a different approximation or matrix function.
-Just replace `exponential_taylor_backward_error_series` with a generator that yields the exact backward-error series $h_m$ for the corresponding function/approximation.
+> It is straightforward to adapt this tool to generate $\theta$ values for a different approximation or matrix function.
+> Just replace `exponential_taylor_backward_error_series` with a generator that yields the exact backward-error series $h_m$ for the corresponding function/approximation.
 
 In practice, we must truncate $h_m$.
 We use a 1,050-term truncation for the main calculation and validate that a 1,200-term truncation yields a $\theta_m$ value that rounds downward to the same binary64 value.
