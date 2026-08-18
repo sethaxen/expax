@@ -22,7 +22,7 @@ def evaluate(matrix, time, vector, key):
         matvec,
         matrix,
         times=time,
-        v_like=vector,
+        x_like=vector,
         key=key,
     )
     return action(vector)
@@ -45,7 +45,7 @@ This may perform more `matvec` calls at planning time, but returns a callable th
 at_times = expax.expm_multiply(
     matvec,
     matrix,
-    v_like=vector,
+    x_like=vector,
     key=key,
 )
 
@@ -66,7 +66,7 @@ action = expax.expm_multiply(
     matvec,
     matrix,
     times=times,
-    v_like=vector,
+    x_like=vector,
     key=key,
 )
 trajectory = action(vector)
@@ -77,14 +77,14 @@ trajectory = action(vector)
 A trace estimator has the compositional signature
 
 ```python
-trace_estimator(matvec, v_like, key, *parameters) -> scalar
+trace_estimator(matvec, x_like, key, *parameters) -> scalar
 ```
 
 The default uses XTrace with two samples when the vector-space dimension permits it, and exact basis actions for dimensions one and two.
 A known trace can be supplied with the same interface.
 
 ```python
-def known_trace(_matvec, _v_like, _key, matrix):
+def known_trace(_matvec, _x_like, _key, matrix):
     return jnp.trace(matrix)
 ```
 
@@ -114,7 +114,7 @@ action = expax.expm_multiply(
     matvec,
     matrix,
     times=times,
-    v_like=vector,
+    x_like=vector,
     key=key,
     while_loop=while_loop,
 )

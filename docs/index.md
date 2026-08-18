@@ -3,7 +3,7 @@
 `expax` computes matrix-exponential actions
 
 \[
-\exp(tA)v
+\exp(tA)x
 \]
 
 in JAX without forming either \(A\) or \(\exp(tA)\).

@@ -44,12 +44,12 @@ def onenormest(
 
     A pair `(estimate_norm, cost)`. `cost` of a random matrix for `max_steps=5`
     is typically `4 * block_size` scalar `matvec` operations. The estimator is
-    called as `estimate_norm(matvec, v_like, key, *parameters)` and accepts:
+    called as `estimate_norm(matvec, x_like, key, *parameters)` and accepts:
 
     - `matvec`: A callable `matvec(vector, *parameters)` representing a linear
       operator. Its input and output are PyTrees with the structure described by
-      `v_like`.
-    - `v_like`: A nonempty PyTree of JAX arrays describing the vector-space
+      `x_like`.
+    - `x_like`: A nonempty PyTree of JAX arrays describing the vector-space
       structure, leaf shapes, and common inexact dtype. Its values are ignored.
     - `key`: A JAX random key for (re)sampling test vectors.
     - `*parameters`: Runtime arguments forwarded unchanged to `matvec` after the
@@ -451,18 +451,18 @@ def _block_onenorm_power_iteration_step(
 
 def _materialize_operator(
     matvec_batch: _BatchedMatvec,
-    v: Inexact[Array, " dim"],
+    x: Inexact[Array, " dim"],
 ) -> Inexact[Array, "dim dim"]:
     """Materialize the operator defined by a batched matvec and a vector."""
-    basis_vecs = jnp.eye(v.size, dtype=v.dtype)
+    basis_vecs = jnp.eye(x.size, dtype=x.dtype)
     return matvec_batch(basis_vecs).T
 
 
 def _onenorm_exact(
-    matvec_batch: _BatchedMatvec, v: Inexact[Array, " dim"]
+    matvec_batch: _BatchedMatvec, x: Inexact[Array, " dim"]
 ) -> _RealScalar:
     """Compute the exact operator 1-norm by materializing the operator."""
-    mat = _materialize_operator(matvec_batch, v)
+    mat = _materialize_operator(matvec_batch, x)
     return jnp.linalg.matrix_norm(mat, ord=1)
 
 
@@ -475,11 +475,11 @@ def _onenormest(
 
     def estimate_norm(
         matvec: Callable[..., _PyTreeVector],
-        v_like: _PyTreeVector,
+        x_like: _PyTreeVector,
         key: PRNGKeyArray,
         *parameters: Any,
     ) -> _RealScalar:
-        flat_like, unravel = _validate_vector_space(v_like)
+        flat_like, unravel = _validate_vector_space(x_like)
         size = flat_like.size
 
         def matvec_flat(

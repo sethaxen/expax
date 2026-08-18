@@ -287,7 +287,7 @@ def test_onenormest_bounds_complex_nonnormal_operator_above_its_cost(seed: int) 
 
 
 def test_onenormest_accepts_parameterized_pytree_operators_above_its_cost() -> None:
-    v_like = {
+    x_like = {
         "left": jnp.zeros(5, dtype=jnp.float64),
         "right": jnp.zeros(4, dtype=jnp.float64),
     }
@@ -306,7 +306,7 @@ def test_onenormest_accepts_parameterized_pytree_operators_above_its_cost() -> N
 
     estimate, _ = expax.normest.onenormest(block_size=2)
     received = jax.jit(
-        lambda scale, matrix, key: estimate(matvec, v_like, key, scale, matrix)
+        lambda scale, matrix, key: estimate(matvec, x_like, key, scale, matrix)
     )(
         jnp.array(2.0),
         matrix,

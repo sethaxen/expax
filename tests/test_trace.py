@@ -15,9 +15,9 @@ def _dense_matvec(x, matrix):
     return matrix @ x
 
 
-def _exact_norm_estimator(matvec, v_like, key, *parameters):
+def _exact_norm_estimator(matvec, x_like, key, *parameters):
     del key
-    flat_like, unravel = ravel_pytree(v_like)
+    flat_like, unravel = ravel_pytree(x_like)
     basis = jnp.eye(flat_like.size, dtype=flat_like.dtype)
 
     def apply(vector):
@@ -71,9 +71,9 @@ def test_operator_plan_uses_finite_trace_shift():
         None,
         _dense_matvec,
         (matrix,),
-        v_like=jnp.zeros(3),
+        x_like=jnp.zeros(3),
         key=jax.random.key(0),
-        trace_estimator=lambda _matvec, _v_like, _key, matrix: jnp.trace(matrix),
+        trace_estimator=lambda _matvec, _x_like, _key, matrix: jnp.trace(matrix),
         norm_estimator=(_exact_norm_estimator, 8),
         theta=theta,
         max_degree=5,
@@ -93,7 +93,7 @@ def test_operator_plan_uses_no_shift_for_nonfinite_trace(trace):
         None,
         _dense_matvec,
         (matrix,),
-        v_like=jnp.zeros(3),
+        x_like=jnp.zeros(3),
         key=jax.random.key(0),
         trace_estimator=lambda *_: trace,
         norm_estimator=(_exact_norm_estimator, 8),
@@ -119,7 +119,7 @@ def test_condition_3_13_skips_power_norm_estimates():
         jnp.array(1.0),
         _dense_matvec,
         (jnp.eye(3),),
-        v_like=jnp.zeros(3),
+        x_like=jnp.zeros(3),
         key=jax.random.key(0),
         trace_estimator=lambda *_: jnp.array(0.0),
         norm_estimator=(norm_estimator, 8),
@@ -142,7 +142,7 @@ def test_operator_plan_preserves_single_precision_across_condition():
         jnp.array(1.0, dtype=jnp.float32),
         _dense_matvec,
         (matrix,),
-        v_like=jnp.zeros(3, dtype=jnp.float32),
+        x_like=jnp.zeros(3, dtype=jnp.float32),
         key=jax.random.key(0),
         trace_estimator=lambda *_: jnp.array(0.0, dtype=jnp.float32),
         norm_estimator=(norm_estimator, 8),
@@ -168,7 +168,7 @@ def test_deferred_plan_builds_reusable_matrix_once():
         None,
         _dense_matvec,
         (jnp.eye(3),),
-        v_like=jnp.zeros(3),
+        x_like=jnp.zeros(3),
         key=jax.random.key(0),
         trace_estimator=lambda *_: jnp.array(0.0),
         norm_estimator=(norm_estimator, 8),
@@ -230,9 +230,9 @@ def test_operator_planning_stops_parameter_gradients():
             None,
             _dense_matvec,
             (matrix,),
-            v_like=jnp.zeros(3),
+            x_like=jnp.zeros(3),
             key=jax.random.key(0),
-            trace_estimator=lambda _matvec, _v_like, _key, matrix: jnp.trace(matrix),
+            trace_estimator=lambda _matvec, _x_like, _key, matrix: jnp.trace(matrix),
             norm_estimator=(_exact_norm_estimator, 8),
             theta=jnp.ones(5),
             max_degree=5,

@@ -1,6 +1,6 @@
 # expax
 
-`expax` computes matrix-exponential actions `exp(t A) v` in JAX without materializing either the linear operator or its exponential.
+`expax` computes matrix-exponential actions `exp(t A) x` in JAX without materializing either the linear operator or its exponential.
 
 ```python
 import jax
@@ -16,7 +16,7 @@ def matvec(vector, diag, sup_diag):
 dim = 10_000
 diag = jnp.ones(dim)
 sup_diag = jnp.ones(dim - 1)
-vector = jnp.arange(dim, dtype=float)
+x = jnp.arange(dim, dtype=float)
 
 # construct exponential action operator
 action = expax.expm_multiply(
@@ -24,12 +24,12 @@ action = expax.expm_multiply(
     diag,
     sup_diag,
     times=jnp.array(0.5),
-    v_like=vector,
+    x_like=jnp.zeros_like(x),
     key=jax.random.key(0),
 )
 
 # call it on an arbitrary vector
-result = action(vector)
+result = action(x)
 ```
 
 Operators and vectors may be arbitrary PyTrees of JAX arrays.

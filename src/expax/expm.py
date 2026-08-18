@@ -23,7 +23,7 @@ def expm_multiply(
     matvec,
     *parameters,
     times=None,
-    v_like,
+    x_like,
     key,
     trace_estimator=_default_trace_estimator,
     norm_estimator=None,
@@ -37,16 +37,16 @@ def expm_multiply(
     Args:
         matvec: Callable ``matvec(vector, *parameters)`` representing the linear
             operator. Its input and output are PyTrees with the structure described
-            by ``v_like``.
+            by ``x_like``.
         *parameters: Differentiable runtime parameters passed to ``matvec``.
         times: A scalar time or a one-dimensional array of times. Supplying times
             returns the vector action directly. Omitting them returns a reusable
             factory ``times -> action`` that retains the operator-dependent plan.
-        v_like: A PyTree of JAX arrays describing the vector-space structure,
+        x_like: A PyTree of JAX arrays describing the vector-space structure,
             shapes, and common inexact dtype. Its values are ignored.
         key: Random key used by stochastic planning estimators.
         trace_estimator: Callable
-            ``estimator(matvec, v_like, key, *parameters) -> trace``. The default
+            ``estimator(matvec, x_like, key, *parameters) -> trace``. The default
             uses two-sample XTrace when the dimension permits it.
         norm_estimator: Pair ``(estimator, cost)``. The estimator has the same
             calling convention as ``trace_estimator`` and estimates the operator
@@ -79,7 +79,7 @@ def expm_multiply(
         when reverse-mode differentiation is required.
     """
     max_degree, max_scaling = _validate_static_options(max_degree, max_scaling)
-    flat_like, _ = _validate_vector_space(v_like)
+    flat_like, _ = _validate_vector_space(x_like)
     if norm_estimator is None:
         norm_estimator = onenormest()
     tolerance = _resolve_tolerance(flat_like.dtype, tol)
@@ -89,7 +89,7 @@ def expm_multiply(
         planned_times,
         matvec,
         parameters,
-        v_like=v_like,
+        x_like=x_like,
         key=key,
         trace_estimator=trace_estimator,
         norm_estimator=norm_estimator,

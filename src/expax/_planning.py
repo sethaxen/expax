@@ -5,11 +5,11 @@ from matfree import stochtrace
 from expax._operator import _validate_vector_space
 
 
-def _default_trace_estimator(matvec, v_like, key, *parameters):
-    flat_like, _ = _validate_vector_space(v_like)
+def _default_trace_estimator(matvec, x_like, key, *parameters):
+    flat_like, _ = _validate_vector_space(x_like)
     dimension = flat_like.size
     num_samples = 2 if dimension >= 5 else 1
-    sampler = stochtrace.sampler_normal(v_like, num=num_samples)
+    sampler = stochtrace.sampler_normal(x_like, num=num_samples)
     integrand = stochtrace.leave_one_out_xtrace()
     estimate = stochtrace.estimator_leave_one_out(integrand, sampler)
     return estimate(matvec, key, *parameters)
@@ -20,24 +20,24 @@ def _build_operator_plan(
     matvec,
     parameters,
     *,
-    v_like,
+    x_like,
     key,
     trace_estimator,
     norm_estimator,
     theta,
     max_degree,
 ):
-    flat_like, _ = _validate_vector_space(v_like)
+    flat_like, _ = _validate_vector_space(x_like)
     dimension = flat_like.size
     p_max = _compute_p_max(max_degree)
     theta = jnp.asarray(theta, dtype=jnp.real(flat_like).dtype)
 
     stopped_parameters = jax.tree.map(jax.lax.stop_gradient, parameters)
-    stopped_v_like = jax.tree.map(
-        lambda leaf: jnp.zeros_like(jax.lax.stop_gradient(leaf)), v_like
+    stopped_x_like = jax.tree.map(
+        lambda leaf: jnp.zeros_like(jax.lax.stop_gradient(leaf)), x_like
     )
     keys = jax.random.split(key, p_max + 2)
-    trace = trace_estimator(matvec, stopped_v_like, keys[0], *stopped_parameters)
+    trace = trace_estimator(matvec, stopped_x_like, keys[0], *stopped_parameters)
     candidate_mu = trace / dimension
     mu = jnp.where(jnp.isfinite(candidate_mu), candidate_mu, 0)
 
@@ -50,7 +50,7 @@ def _build_operator_plan(
         )
 
     estimate_norm, estimator_cost = norm_estimator
-    norm = estimate_norm(shifted_matvec, stopped_v_like, keys[1], *stopped_parameters)
+    norm = estimate_norm(shifted_matvec, stopped_x_like, keys[1], *stopped_parameters)
 
     def estimate_power_norms():
         root_norms = []
@@ -63,7 +63,7 @@ def _build_operator_plan(
 
             power_norm = estimate_norm(
                 powered_matvec,
-                stopped_v_like,
+                stopped_x_like,
                 keys[power],
                 *stopped_parameters,
             )

@@ -28,7 +28,7 @@ def test_linear_adjoint_transposes_real_array_operator():
 
 
 def test_linear_adjoint_is_hermitian_for_complex_pytree():
-    v_like = {
+    x_like = {
         "a": jnp.zeros(2, dtype=jnp.complex128),
         "b": jnp.zeros(1, dtype=jnp.complex128),
     }
@@ -45,27 +45,27 @@ def test_linear_adjoint_is_hermitian_for_complex_pytree():
         "a": jnp.array([1 + 1j, 2 - 1j]),
         "b": jnp.array([3j]),
     }
-    adjoint = _linear_adjoint(matvec, v_like)
+    adjoint = _linear_adjoint(matvec, x_like)
     flat, unravel = ravel_pytree(vector)
 
     _assert_tree_allclose(adjoint(vector)[0], unravel(matrix.T.conj() @ flat))
 
 
 def test_validate_vector_space_returns_coordinate_map():
-    v_like = {
+    x_like = {
         "a": jnp.zeros((2, 2), dtype=jnp.float32),
         "b": jnp.zeros(3, dtype=jnp.float32),
     }
 
-    flat, unravel = _validate_vector_space(v_like)
+    flat, unravel = _validate_vector_space(x_like)
 
     assert flat.shape == (7,)
     assert flat.dtype == jnp.float32
-    _assert_tree_allclose(unravel(flat), v_like)
+    _assert_tree_allclose(unravel(flat), x_like)
 
 
 @pytest.mark.parametrize(
-    ("v_like", "error"),
+    ("x_like", "error"),
     [
         ({}, ValueError),
         (jnp.zeros(2, dtype=jnp.int32), TypeError),
@@ -79,6 +79,6 @@ def test_validate_vector_space_returns_coordinate_map():
         (jnp.zeros(0, dtype=jnp.float32), ValueError),
     ],
 )
-def test_validate_vector_space_rejects_unsupported_spaces(v_like, error):
+def test_validate_vector_space_rejects_unsupported_spaces(x_like, error):
     with pytest.raises(error):
-        _validate_vector_space(v_like)
+        _validate_vector_space(x_like)

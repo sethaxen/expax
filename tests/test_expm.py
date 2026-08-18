@@ -19,9 +19,9 @@ def _dense_matvec(x, matrix):
     return matrix @ x
 
 
-def _exact_norm_estimator(matvec, v_like, key, *parameters):
+def _exact_norm_estimator(matvec, x_like, key, *parameters):
     del key
-    flat_like, unravel = ravel_pytree(v_like)
+    flat_like, unravel = ravel_pytree(x_like)
     basis = jnp.eye(flat_like.size, dtype=flat_like.dtype)
 
     def apply(vector):
@@ -32,7 +32,7 @@ def _exact_norm_estimator(matvec, v_like, key, *parameters):
     return jnp.max(jnp.sum(jnp.abs(images), axis=-1))
 
 
-def _known_trace(_matvec, _v_like, _key, matrix):
+def _known_trace(_matvec, _x_like, _key, matrix):
     return jnp.trace(matrix)
 
 
@@ -45,7 +45,7 @@ def test_expm_multiply_known_time_matches_dense_reference():
         _dense_matvec,
         matrix,
         times=time,
-        v_like=jnp.zeros_like(vector),
+        x_like=jnp.zeros_like(vector),
         key=jax.random.key(0),
         trace_estimator=_known_trace,
         norm_estimator=(_exact_norm_estimator, 8),
@@ -65,7 +65,7 @@ def test_expm_multiply_multiple_times_have_leading_time_axis():
         _dense_matvec,
         matrix,
         times=times,
-        v_like=jnp.zeros_like(vector),
+        x_like=jnp.zeros_like(vector),
         key=jax.random.key(0),
         trace_estimator=_known_trace,
         norm_estimator=(_exact_norm_estimator, 8),
@@ -96,7 +96,7 @@ def test_expm_multiply_multiple_times_support_pytree_vectors():
         matvec,
         matrix,
         times=times,
-        v_like=jax.tree.map(jnp.zeros_like, vector),
+        x_like=jax.tree.map(jnp.zeros_like, vector),
         key=jax.random.key(0),
         trace_estimator=_known_trace,
         norm_estimator=(_exact_norm_estimator, 8),
@@ -127,7 +127,7 @@ def test_expm_multiply_multiple_times_support_forward_mode_differentiation():
             _dense_matvec,
             scale * base,
             times=times,
-            v_like=jnp.zeros_like(vector),
+            x_like=jnp.zeros_like(vector),
             key=jax.random.key(0),
             trace_estimator=_known_trace,
             norm_estimator=(_exact_norm_estimator, 8),
@@ -163,7 +163,7 @@ def test_expm_multiply_actions_vmap_over_vectors():
         _dense_matvec,
         matrix,
         times=times,
-        v_like=jnp.zeros(2),
+        x_like=jnp.zeros(2),
         key=jax.random.key(0),
         trace_estimator=_known_trace,
         norm_estimator=(_exact_norm_estimator, 8),
@@ -195,7 +195,7 @@ def test_expm_multiply_uses_default_norm_estimator_for_none():
         _dense_matvec,
         matrix,
         times=time,
-        v_like=jnp.zeros_like(vector),
+        x_like=jnp.zeros_like(vector),
         key=jax.random.key(1),
         trace_estimator=_known_trace,
         norm_estimator=None,
@@ -211,7 +211,7 @@ def test_expm_multiply_none_uses_onenormest_for_small_vector_spaces():
     vector = jnp.ones(2)
     options = {
         "times": jnp.array(22.0),
-        "v_like": jnp.zeros(2),
+        "x_like": jnp.zeros(2),
         "key": jax.random.key(1),
         "max_scaling": 1,
     }
@@ -245,7 +245,7 @@ def test_expm_multiply_defaults_support_small_vector_spaces(dimension):
         _dense_matvec,
         matrix,
         times=time,
-        v_like=jnp.zeros_like(vector),
+        x_like=jnp.zeros_like(vector),
         key=jax.random.key(1),
     )
     received = action(vector)
@@ -259,7 +259,7 @@ def test_expm_multiply_deferred_time_matches_known_time():
     vector = jnp.array([1.0, 2.0, -1.0])
     time = jnp.array(-0.3)
     options = {
-        "v_like": jnp.zeros_like(vector),
+        "x_like": jnp.zeros_like(vector),
         "key": jax.random.key(2),
         "trace_estimator": _known_trace,
         "norm_estimator": (_exact_norm_estimator, 8),
@@ -276,7 +276,7 @@ def test_expm_multiply_deferred_time_matches_known_time():
     )
 
 
-def test_expm_multiply_ignores_v_like_values():
+def test_expm_multiply_ignores_x_like_values():
     matrix = jnp.diag(jnp.array([1.0, 2.0, 3.0]))
     vector = jnp.array([2.0, -1.0, 0.5])
     options = {
@@ -287,10 +287,10 @@ def test_expm_multiply_ignores_v_like_values():
     }
 
     from_zeros = expax.expm_multiply(
-        _dense_matvec, matrix, v_like=jnp.zeros(3), **options
+        _dense_matvec, matrix, x_like=jnp.zeros(3), **options
     )(vector)
     from_values = expax.expm_multiply(
-        _dense_matvec, matrix, v_like=jnp.array([8.0, -2.0, 5.0]), **options
+        _dense_matvec, matrix, x_like=jnp.array([8.0, -2.0, 5.0]), **options
     )(vector)
 
     np.testing.assert_array_equal(from_zeros, from_values)
@@ -306,7 +306,7 @@ def test_expm_multiply_plans_with_runtime_parameters_inside_jit():
             _dense_matvec,
             matrix,
             times=time,
-            v_like=vector,
+            x_like=vector,
             key=key,
             trace_estimator=_known_trace,
             norm_estimator=(_exact_norm_estimator, 8),
@@ -341,7 +341,7 @@ def test_deferred_time_selection_reuses_operator_plan():
     at_times = expax.expm_multiply(
         _dense_matvec,
         jnp.eye(3),
-        v_like=jnp.zeros(3),
+        x_like=jnp.zeros(3),
         key=jax.random.key(0),
         trace_estimator=lambda *_: jnp.array(0.0),
         norm_estimator=(norm_estimator, 8),
@@ -365,7 +365,7 @@ def test_expm_multiply_rejects_invalid_max_degree(max_degree):
             _dense_matvec,
             jnp.eye(3),
             times=jnp.array(0.5),
-            v_like=jnp.zeros(3),
+            x_like=jnp.zeros(3),
             key=jax.random.key(0),
             trace_estimator=_known_trace,
             norm_estimator=(_exact_norm_estimator, 8),
@@ -383,7 +383,7 @@ def test_expm_multiply_rejects_invalid_max_scaling(max_scaling):
             _dense_matvec,
             jnp.eye(3),
             times=jnp.array(0.5),
-            v_like=jnp.zeros(3),
+            x_like=jnp.zeros(3),
             key=jax.random.key(0),
             trace_estimator=_known_trace,
             norm_estimator=(_exact_norm_estimator, 8),
@@ -396,7 +396,7 @@ def test_expm_multiply_accepts_numpy_integer_options():
         _dense_matvec,
         jnp.eye(3),
         times=jnp.array(0.5),
-        v_like=jnp.zeros(3),
+        x_like=jnp.zeros(3),
         key=jax.random.key(0),
         trace_estimator=_known_trace,
         norm_estimator=(_exact_norm_estimator, 8),
@@ -414,7 +414,7 @@ def test_expm_multiply_rejects_invalid_tolerance(tol):
             _dense_matvec,
             jnp.eye(3),
             times=jnp.array(0.5),
-            v_like=jnp.zeros(3),
+            x_like=jnp.zeros(3),
             key=jax.random.key(0),
             trace_estimator=_known_trace,
             norm_estimator=(_exact_norm_estimator, 8),
@@ -429,7 +429,7 @@ def test_expm_multiply_rejects_invalid_time_shapes(times):
             _dense_matvec,
             jnp.eye(3),
             times=times,
-            v_like=jnp.zeros(3),
+            x_like=jnp.zeros(3),
             key=jax.random.key(0),
             trace_estimator=_known_trace,
             norm_estimator=(_exact_norm_estimator, 8),
@@ -453,7 +453,7 @@ def test_expm_multiply_skips_actions_above_max_scaling():
         matvec,
         jnp.eye(3),
         times=jnp.array(100.0),
-        v_like=jnp.zeros(3),
+        x_like=jnp.zeros(3),
         key=jax.random.key(0),
         trace_estimator=lambda *_: jnp.array(0.0),
         norm_estimator=(norm_estimator, 8),
@@ -477,7 +477,7 @@ def test_expm_multiply_uses_injected_while_loop():
         _dense_matvec,
         jnp.eye(3),
         times=jnp.array(0.5),
-        v_like=jnp.zeros(3),
+        x_like=jnp.zeros(3),
         key=jax.random.key(0),
         trace_estimator=_known_trace,
         norm_estimator=(_exact_norm_estimator, 8),
