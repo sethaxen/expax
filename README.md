@@ -1,5 +1,12 @@
 # expax
 
+[![Status: Experimental](https://img.shields.io/badge/status-experimental-orange)](#development-status)
+
+> [!WARNING]
+> **Development status:** `expax` is under active development and is not yet ready for production or research-critical use.
+> The API, numerical methods, and implementation may change substantially, and correctness and performance are in the process of being validated across the full intended range of problems.
+> Please independently verify results before relying on them in scientific work.
+
 `expax` computes matrix-exponential actions `exp(t A) x` in JAX without materializing either the linear operator or its exponential.
 
 ```python
